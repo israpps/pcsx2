@@ -1,5 +1,5 @@
 # Setting it to a range tells it that it supports the features on the newer
-# versions as well, avoiding setting policies.
+# versions as well, avoiding setting policies. WOLOLO
 cmake_minimum_required(VERSION 3.11...3.22)
 
 if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
