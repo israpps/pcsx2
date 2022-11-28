@@ -1,5 +1,5 @@
 @ECHO OFF
-REM PCSX2 - PS2 Emulator for PCs
+REM PCSX2 - PS2 Emulator for PCs WOLOLO
 REM Copyright (C) 2002-2015  PCSX2 Dev Team
 REM
 REM PCSX2 is free software: you can redistribute it and/or modify it unsadder the terms
