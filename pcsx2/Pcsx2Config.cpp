@@ -155,6 +155,7 @@ Pcsx2Config::RecompilerOptions::RecompilerOptions()
 	EnableIOP = true;
 	EnableVU0 = true;
 	EnableVU1 = true;
+	EnableFastmem = true;
 
 	// vu and fpu clamping default to standard overflow.
 	vuOverflow = true;
@@ -211,6 +212,7 @@ void Pcsx2Config::RecompilerOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(EnableEECache);
 	SettingsWrapBitBool(EnableVU0);
 	SettingsWrapBitBool(EnableVU1);
+	SettingsWrapBitBool(EnableFastmem);
 
 	SettingsWrapBitBool(vuOverflow);
 	SettingsWrapBitBool(vuExtraOverflow);
@@ -220,10 +222,6 @@ void Pcsx2Config::RecompilerOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(fpuOverflow);
 	SettingsWrapBitBool(fpuExtraOverflow);
 	SettingsWrapBitBool(fpuFullMode);
-
-	SettingsWrapBitBool(StackFrameChecks);
-	SettingsWrapBitBool(PreBlockCheckEE);
-	SettingsWrapBitBool(PreBlockCheckIOP);
 }
 
 bool Pcsx2Config::CpuOptions::CpusChanged(const CpuOptions& right) const
@@ -321,8 +319,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	OsdShowResolution = false;
 	OsdShowGSStats = false;
 	OsdShowIndicators = true;
+	OsdShowSettings = false;
+	OsdShowInputs = false;
 
-	HWDisableReadbacks = false;
+	HWDownloadMode = GSHardwareDownloadMode::Enabled;
+	HWSpinGPUForReadbacks = false;
+	HWSpinCPUForReadbacks = false;
 	GPUPaletteConversion = false;
 	AutoFlushSW = true;
 	PreloadFrameWithGSData = false;
@@ -403,6 +405,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(TextureFiltering) &&
 		OpEqu(TexturePreloading) &&
 		OpEqu(GSDumpCompression) &&
+		OpEqu(HWDownloadMode) &&
 		OpEqu(Dithering) &&
 		OpEqu(MaxAnisotropy) &&
 		OpEqu(SWExtraThreads) &&
@@ -418,6 +421,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_TCOffsetX) &&
 		OpEqu(UserHacks_TCOffsetY) &&
 		OpEqu(UserHacks_CPUSpriteRenderBW) &&
+		OpEqu(UserHacks_CPUCLUTRender) &&
 		OpEqu(OverrideTextureBarriers) &&
 		OpEqu(OverrideGeometryShaders) &&
 
@@ -497,7 +501,8 @@ void Pcsx2Config::GSOptions::LoadSaveIniSettings(SettingsWrapper& wrap)
 #define GSSettingIntEx(var, name) SettingsWrapBitfieldEx(var, name)
 #define GSSettingBool(var) SettingsWrapBitBool(var)
 #define GSSettingBoolEx(var, name) SettingsWrapBitBoolEx(var, name)
-#define GSSettingFloat(var) SettingsWrapBitfield(var)
+#define GSSettingFloat(var) SettingsWrapEntry(var)
+#define GSSettingFloatEx(var, name) SettingsWrapEntryEx(var, name)
 #define GSSettingIntEnumEx(var, name) SettingsWrapIntEnumEx(var, name)
 #define GSSettingString(var) SettingsWrapEntry(var)
 #define GSSettingStringEx(var, name) SettingsWrapEntryEx(var, name)
@@ -512,6 +517,7 @@ void Pcsx2Config::GSOptions::ReloadIniSettings()
 #define GSSettingBool(var) var = theApp.GetConfigB(#var)
 #define GSSettingBoolEx(var, name) var = theApp.GetConfigB(name)
 #define GSSettingFloat(var) var = static_cast<float>(theApp.GetConfigI(#var))
+#define GSSettingFloatEx(var, name) var = static_cast<float>(theApp.GetConfigI(name))
 #define GSSettingIntEnumEx(var, name) var = static_cast<decltype(var)>(theApp.GetConfigI(name))
 #define GSSettingString(var) var = theApp.GetConfigS(#var)
 #define GSSettingStringEx(var, name) var = theApp.GetConfigS(name)
@@ -540,8 +546,11 @@ void Pcsx2Config::GSOptions::ReloadIniSettings()
 	GSSettingBool(OsdShowResolution);
 	GSSettingBool(OsdShowGSStats);
 	GSSettingBool(OsdShowIndicators);
+	GSSettingBool(OsdShowSettings);
+	GSSettingBool(OsdShowInputs);
 
-	GSSettingBool(HWDisableReadbacks);
+	GSSettingBool(HWSpinGPUForReadbacks);
+	GSSettingBool(HWSpinCPUForReadbacks);
 	GSSettingBoolEx(GPUPaletteConversion, "paltex");
 	GSSettingBoolEx(AutoFlushSW, "autoflush_sw");
 	GSSettingBoolEx(PreloadFrameWithGSData, "preload_frame_with_gs_data");
@@ -574,13 +583,15 @@ void Pcsx2Config::GSOptions::ReloadIniSettings()
 	GSSettingBool(LoadTextureReplacementsAsync);
 	GSSettingBool(PrecacheTextureReplacements);
 
-	GSSettingIntEnumEx(InterlaceMode, "deinterlace");
+	GSSettingIntEnumEx(InterlaceMode, "deinterlace_mode");
 
 	GSSettingFloat(OsdScale);
 
 	GSSettingIntEnumEx(Renderer, "Renderer");
-	GSSettingIntEx(UpscaleMultiplier, "upscale_multiplier");
-	UpscaleMultiplier = std::clamp(UpscaleMultiplier, 1u, 8u);
+	GSSettingFloatEx(UpscaleMultiplier, "upscale_multiplier");
+
+	// ~51x would the upper bound here for 32768x32768 textures, but you'll run out VRAM long before then.
+	UpscaleMultiplier = std::clamp(UpscaleMultiplier, 0.5f, 50.0f);
 
 	GSSettingIntEnumEx(HWMipmap, "mipmap_hw");
 	GSSettingIntEnumEx(AccurateBlendingUnit, "accurate_blending_unit");
@@ -588,6 +599,7 @@ void Pcsx2Config::GSOptions::ReloadIniSettings()
 	GSSettingIntEnumEx(TextureFiltering, "filter");
 	GSSettingIntEnumEx(TexturePreloading, "texture_preloading");
 	GSSettingIntEnumEx(GSDumpCompression, "GSDumpCompression");
+	GSSettingIntEnumEx(HWDownloadMode, "HWDownloadMode");
 	GSSettingIntEx(Dithering, "dithering_ps2");
 	GSSettingIntEx(MaxAnisotropy, "MaxAnisotropy");
 	GSSettingIntEx(SWExtraThreads, "extrathreads");
@@ -603,6 +615,7 @@ void Pcsx2Config::GSOptions::ReloadIniSettings()
 	GSSettingIntEx(UserHacks_TCOffsetX, "UserHacks_TCOffsetX");
 	GSSettingIntEx(UserHacks_TCOffsetY, "UserHacks_TCOffsetY");
 	GSSettingIntEx(UserHacks_CPUSpriteRenderBW, "UserHacks_CPUSpriteRenderBW");
+	GSSettingIntEx(UserHacks_CPUCLUTRender, "UserHacks_CPUCLUTRender");
 	GSSettingIntEnumEx(TriFilter, "TriFilter");
 	GSSettingIntEx(OverrideTextureBarriers, "OverrideTextureBarriers");
 	GSSettingIntEx(OverrideGeometryShaders, "OverrideGeometryShaders");
@@ -650,13 +663,14 @@ void Pcsx2Config::GSOptions::MaskUserHacks()
 	UserHacks_TCOffsetX = 0;
 	UserHacks_TCOffsetY = 0;
 	UserHacks_CPUSpriteRenderBW = 0;
+	UserHacks_CPUCLUTRender = 0;
 	SkipDrawStart = 0;
 	SkipDrawEnd = 0;
 }
 
 void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 {
-	if (UpscaleMultiplier != 1 && ManualUserHacks)
+	if (UpscaleMultiplier > 1.0f && ManualUserHacks)
 		return;
 
 	UserHacks_AlignSpriteX = false;
@@ -671,18 +685,6 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 bool Pcsx2Config::GSOptions::UseHardwareRenderer() const
 {
 	return (Renderer != GSRendererType::Null && Renderer != GSRendererType::SW);
-}
-
-VsyncMode Pcsx2Config::GetEffectiveVsyncMode() const
-{
-	if (GS.LimitScalar != 1.0f)
-	{
-		Console.WriteLn("Vsync is OFF");
-		return VsyncMode::Off;
-	}
-
-	Console.WriteLn("Vsync is %s", GS.VsyncEnable == VsyncMode::Off ? "OFF" : (GS.VsyncEnable == VsyncMode::Adaptive ? "ADAPTIVE" : "ON"));
-	return GS.VsyncEnable;
 }
 
 Pcsx2Config::SPU2Options::SPU2Options()
@@ -854,6 +856,7 @@ static const char* const tbl_GamefixNames[] =
 	"SkipMPEG",
 	"OPHFlag",
 	"EETiming",
+	"InstantDMA",
 	"DMABusy",
 	"GIFFIFO",
 	"VIFFIFO",
@@ -863,7 +866,8 @@ static const char* const tbl_GamefixNames[] =
 	"VUSync",
 	"VUOverflow",
 	"XGKick",
-	"BlitInternalFPS"
+	"BlitInternalFPS",
+	"FullVU0Sync",
 };
 
 const char* EnumToString(GamefixId id)
@@ -893,6 +897,7 @@ void Pcsx2Config::GamefixOptions::Set(GamefixId id, bool enabled)
 		case Fix_FpuNegDiv:           FpuNegDivHack           = enabled; break;
 		case Fix_XGKick:              XgKickHack              = enabled; break;
 		case Fix_EETiming:            EETimingHack            = enabled; break;
+		case Fix_InstantDMA:          InstantDMAHack          = enabled; break;
 		case Fix_SoftwareRendererFMV: SoftwareRendererFMVHack = enabled; break;
 		case Fix_SkipMpeg:            SkipMPEGHack            = enabled; break;
 		case Fix_OPHFlag:             OPHFlagHack             = enabled; break;
@@ -905,6 +910,7 @@ void Pcsx2Config::GamefixOptions::Set(GamefixId id, bool enabled)
 		case Fix_VUSync:              VUSyncHack              = enabled; break;
 		case Fix_VUOverflow:          VUOverflowHack          = enabled; break;
 		case Fix_BlitInternalFPS:     BlitInternalFPSHack     = enabled; break;
+		case Fix_FullVU0Sync:         FullVU0SyncHack         = enabled; break;
 		jNO_DEFAULT;
 	}
 }
@@ -919,6 +925,7 @@ bool Pcsx2Config::GamefixOptions::Get(GamefixId id) const
 		case Fix_FpuNegDiv:           return FpuNegDivHack;
 		case Fix_XGKick:              return XgKickHack;
 		case Fix_EETiming:            return EETimingHack;
+		case Fix_InstantDMA:          return InstantDMAHack;
 		case Fix_SoftwareRendererFMV: return SoftwareRendererFMVHack;
 		case Fix_SkipMpeg:            return SkipMPEGHack;
 		case Fix_OPHFlag:             return OPHFlagHack;
@@ -931,6 +938,7 @@ bool Pcsx2Config::GamefixOptions::Get(GamefixId id) const
 		case Fix_VUSync:              return VUSyncHack;
 		case Fix_VUOverflow:          return VUOverflowHack;
 		case Fix_BlitInternalFPS:     return BlitInternalFPSHack;
+		case Fix_FullVU0Sync:         return FullVU0SyncHack;
 		jNO_DEFAULT;
 	}
 	return false; // unreachable, but we still need to suppress warnings >_<
@@ -945,6 +953,7 @@ void Pcsx2Config::GamefixOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(FpuNegDivHack);
 	SettingsWrapBitBool(XgKickHack);
 	SettingsWrapBitBool(EETimingHack);
+	SettingsWrapBitBool(InstantDMAHack);
 	SettingsWrapBitBool(SoftwareRendererFMVHack);
 	SettingsWrapBitBool(SkipMPEGHack);
 	SettingsWrapBitBool(OPHFlagHack);
@@ -957,6 +966,7 @@ void Pcsx2Config::GamefixOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(VUSyncHack);
 	SettingsWrapBitBool(VUOverflowHack);
 	SettingsWrapBitBool(BlitInternalFPSHack);
+	SettingsWrapBitBool(FullVU0SyncHack);
 }
 
 

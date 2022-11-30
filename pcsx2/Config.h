@@ -35,6 +35,7 @@ enum GamefixId
 	Fix_SkipMpeg,
 	Fix_OPHFlag,
 	Fix_EETiming,
+	Fix_InstantDMA,
 	Fix_DMABusy,
 	Fix_GIFFIFO,
 	Fix_VIFFIFO,
@@ -45,6 +46,7 @@ enum GamefixId
 	Fix_VUOverflow,
 	Fix_XGKick,
 	Fix_BlitInternalFPS,
+	Fix_FullVU0Sync,
 
 	GamefixId_COUNT
 };
@@ -129,6 +131,7 @@ enum class GSRendererType : s8
 
 enum class GSInterlaceMode : u8
 {
+	Automatic,
 	Off,
 	WeaveTFF,
 	WeaveBFF,
@@ -136,7 +139,8 @@ enum class GSInterlaceMode : u8
 	BobBFF,
 	BlendTFF,
 	BlendBFF,
-	Automatic,
+	AdaptiveTFF,
+	AdaptiveBFF,
 	Count
 };
 
@@ -197,6 +201,14 @@ enum class GSDumpCompressionMethod : u8
 	Uncompressed,
 	LZMA,
 	Zstandard,
+};
+
+enum class GSHardwareDownloadMode : u8
+{
+	Enabled,
+	NoReadbacks,
+	Unsynchronized,
+	Disabled
 };
 
 // Template function for casting enumerations to their underlying type
@@ -370,11 +382,9 @@ struct Pcsx2Config
 			fpuFullMode : 1;
 
 		bool
-			StackFrameChecks : 1,
-			PreBlockCheckEE : 1,
-			PreBlockCheckIOP : 1;
-		bool
 			EnableEECache : 1;
+		bool
+			EnableFastmem : 1;
 		BITFIELD_END
 
 		RecompilerOptions();
@@ -390,6 +400,30 @@ struct Pcsx2Config
 		bool operator!=(const RecompilerOptions& right) const
 		{
 			return !OpEqu(bitset);
+		}
+
+		u32 GetEEClampMode() const
+		{
+			return fpuFullMode ? 3 : (fpuExtraOverflow ? 2 : (fpuOverflow ? 1 : 0));
+		}
+
+		void SetEEClampMode(u32 value)
+		{
+			fpuOverflow = (value >= 1);
+			fpuExtraOverflow = (value >= 2);
+			fpuFullMode = (value >= 3);
+		}
+
+		u32 GetVUClampMode() const
+		{
+			return vuSignOverflow ? 3 : (vuExtraOverflow ? 2 : (vuOverflow ? 1 : 0));
+		}
+
+		void SetVUClampMode(u32 value)
+		{
+			vuOverflow = (value >= 1);
+			vuExtraOverflow = (value >= 2);
+			vuSignOverflow = (value >= 3);
 		}
 	};
 
@@ -459,10 +493,13 @@ struct Pcsx2Config
 					OsdShowGPU : 1,
 					OsdShowResolution : 1,
 					OsdShowGSStats : 1,
-					OsdShowIndicators : 1;
+					OsdShowIndicators : 1,
+					OsdShowSettings : 1,
+					OsdShowInputs : 1;
 
 				bool
-					HWDisableReadbacks : 1,
+					HWSpinGPUForReadbacks : 1,
+					HWSpinCPUForReadbacks : 1,
 					GPUPaletteConversion : 1,
 					AutoFlushSW : 1,
 					PreloadFrameWithGSData : 1,
@@ -527,7 +564,7 @@ struct Pcsx2Config
 		float OsdScale{100.0};
 
 		GSRendererType Renderer{GSRendererType::Auto};
-		uint UpscaleMultiplier{1};
+		float UpscaleMultiplier{1.0f};
 
 		HWMipmapLevel HWMipmap{HWMipmapLevel::Automatic};
 		AccBlendLevel AccurateBlendingUnit{AccBlendLevel::Basic};
@@ -535,6 +572,7 @@ struct Pcsx2Config
 		BiFiltering TextureFiltering{BiFiltering::PS2};
 		TexturePreloadingLevel TexturePreloading{TexturePreloadingLevel::Full};
 		GSDumpCompressionMethod GSDumpCompression{GSDumpCompressionMethod::LZMA};
+		GSHardwareDownloadMode HWDownloadMode{GSHardwareDownloadMode::Enabled};
 		int Dithering{2};
 		int MaxAnisotropy{0};
 		int SWExtraThreads{2};
@@ -549,6 +587,7 @@ struct Pcsx2Config
 		int UserHacks_TCOffsetX{0};
 		int UserHacks_TCOffsetY{0};
 		int UserHacks_CPUSpriteRenderBW{0};
+		int UserHacks_CPUCLUTRender{ 0 };
 		TriFiltering TriFilter{TriFiltering::Automatic};
 		int OverrideTextureBarriers{-1};
 		int OverrideGeometryShaders{-1};
@@ -799,6 +838,7 @@ struct Pcsx2Config
 			SkipMPEGHack : 1, // Skips MPEG videos (Katamari and other games need this)
 			OPHFlagHack : 1, // Bleach Blade Battlers
 			EETimingHack : 1, // General purpose timing hack.
+			InstantDMAHack : 1, // Instantly complete DMA's if possible, good for cache emulation problems.
 			DMABusyHack : 1, // Denies writes to the DMAC when it's busy. This is correct behaviour but bad timing can cause problems.
 			GIFFIFOHack : 1, // Enabled the GIF FIFO (more correct but slower)
 			VIFFIFOHack : 1, // Pretends to fill the non-existant VIF FIFO Buffer.
@@ -808,7 +848,8 @@ struct Pcsx2Config
 			VUSyncHack : 1, // Makes microVU run behind the EE to avoid VU register reading/writing sync issues. Useful for M-Bit games
 			VUOverflowHack : 1, // Tries to simulate overflow flag checks (not really possible on x86 without soft floats)
 			XgKickHack : 1, // Erementar Gerad, adds more delay to VU XGkick instructions. Corrects the color of some graphics, but breaks Tri-ace games and others.
-			BlitInternalFPSHack : 1; // Disables privileged register write-based FPS detection.
+			BlitInternalFPSHack : 1, // Disables privileged register write-based FPS detection.
+			FullVU0SyncHack : 1; // Forces tight VU0 sync on every COP2 instruction.
 		BITFIELD_END
 
 		GamefixOptions();
@@ -1055,8 +1096,6 @@ struct Pcsx2Config
 
 	bool MultitapEnabled(uint port) const;
 
-	VsyncMode GetEffectiveVsyncMode() const;
-
 	bool operator==(const Pcsx2Config& right) const;
 	bool operator!=(const Pcsx2Config& right) const
 	{
@@ -1111,6 +1150,7 @@ namespace EmuFolders
 #define CHECK_EEREC (EmuConfig.Cpu.Recompiler.EnableEE)
 #define CHECK_CACHE (EmuConfig.Cpu.Recompiler.EnableEECache)
 #define CHECK_IOPREC (EmuConfig.Cpu.Recompiler.EnableIOP)
+#define CHECK_FASTMEM (EmuConfig.Cpu.Recompiler.EnableEE && EmuConfig.Cpu.Recompiler.EnableFastmem)
 
 //------------ SPECIAL GAME FIXES!!! ---------------
 #define CHECK_VUADDSUBHACK (EmuConfig.Gamefixes.VuAddSubHack) // Special Fix for Tri-ace games, they use an encryption algorithm that requires VU addi opcode to be bit-accurate.
@@ -1118,6 +1158,7 @@ namespace EmuFolders
 #define CHECK_FPUNEGDIVHACK (EmuConfig.Gamefixes.FpuNegDivHack) // Special Fix for Gundam games messed up camera-view.
 #define CHECK_XGKICKHACK (EmuConfig.Gamefixes.XgKickHack) // Special Fix for Erementar Gerad, adds more delay to VU XGkick instructions. Corrects the color of some graphics.
 #define CHECK_EETIMINGHACK (EmuConfig.Gamefixes.EETimingHack) // Fix all scheduled events to happen in 1 cycle.
+#define CHECK_INSTANTDMAHACK (EmuConfig.Gamefixes.InstantDMAHack) // Attempt to finish DMA's instantly, useful for games which rely on cache emulation.
 #define CHECK_SKIPMPEGHACK (EmuConfig.Gamefixes.SkipMPEGHack) // Finds sceMpegIsEnd pattern to tell the game the mpeg is finished (Katamari and a lot of games need this)
 #define CHECK_OPHFLAGHACK (EmuConfig.Gamefixes.OPHFlagHack) // Bleach Blade Battlers
 #define CHECK_DMABUSYHACK (EmuConfig.Gamefixes.DMABusyHack) // Denies writes to the DMAC when it's busy. This is correct behaviour but bad timing can cause problems.
@@ -1125,6 +1166,7 @@ namespace EmuFolders
 #define CHECK_VIF1STALLHACK (EmuConfig.Gamefixes.VIF1StallHack) // Like above, processes FIFO data before the stall is allowed (to make sure data goes over).
 #define CHECK_GIFFIFOHACK (EmuConfig.Gamefixes.GIFFIFOHack) // Enabled the GIF FIFO (more correct but slower)
 #define CHECK_VUOVERFLOWHACK (EmuConfig.Gamefixes.VUOverflowHack) // Special Fix for Superman Returns, they check for overflows on PS2 floats which we can't do without soft floats.
+#define CHECK_FULLVU0SYNCHACK (EmuConfig.Gamefixes.FullVU0SyncHack)
 
 //------------ Advanced Options!!! ---------------
 #define CHECK_VU_OVERFLOW (EmuConfig.Cpu.Recompiler.vuOverflow)

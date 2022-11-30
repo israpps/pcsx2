@@ -127,6 +127,7 @@ static std::string s_game_serial;
 static std::string s_game_name;
 static std::string s_elf_override;
 static std::string s_input_profile_name;
+static u32 s_cdvd_offset = 0;
 static u32 s_active_game_fixes = 0;
 static std::vector<u8> s_widescreen_cheats_data;
 static bool s_widescreen_cheats_loaded = false;
@@ -236,6 +237,12 @@ std::string VMManager::GetGameName()
 	return s_game_name;
 }
 
+u32 VMManager::GetCdvdOffset()
+{
+	std::unique_lock lock(s_info_mutex);
+	return s_cdvd_offset;
+};
+
 bool VMManager::Internal::InitializeGlobals()
 {
 	// On Win32, we have a bunch of things which use COM (e.g. SDL, XAudio2, etc).
@@ -279,8 +286,7 @@ bool VMManager::Internal::InitializeMemory()
 	s_vm_memory = std::make_unique<SysMainMemory>();
 	s_cpu_provider_pack = std::make_unique<SysCpuProviderPack>();
 
-	s_vm_memory->ReserveAll();
-	return true;
+	return s_vm_memory->Allocate();
 }
 
 void VMManager::Internal::ReleaseMemory()
@@ -290,8 +296,6 @@ void VMManager::Internal::ReleaseMemory()
 	std::vector<u8>().swap(s_no_interlacing_cheats_data);
 	s_no_interlacing_cheats_loaded = false;
 
-	s_vm_memory->DecommitAll();
-	s_vm_memory->ReleaseAll();
 	s_vm_memory.reset();
 	s_cpu_provider_pack.reset();
 }
@@ -410,7 +414,7 @@ void VMManager::RequestDisplaySize(float scale /*= 0.0f*/)
 	if (scale != 0.0f)
 	{
 		// unapply the upscaling, then apply the scale
-		scale = (1.0f / static_cast<float>(GSConfig.UpscaleMultiplier)) * scale;
+		scale = (1.0f / GSConfig.UpscaleMultiplier) * scale;
 		width *= scale;
 		height *= scale;
 	}
@@ -681,7 +685,7 @@ void VMManager::UpdateRunningGame(bool resetting, bool game_starting)
 		// If we don't reset the timer here, when using folder memcards the reindex will cause an eject,
 		// which a bunch of games don't like since they access the memory card on boot.
 		if (game_starting || resetting)
-			ClearMcdEjectTimeoutNow();
+			AutoEject::ClearAll();
 	}
 
 	UpdateGameSettingsLayer();
@@ -690,11 +694,17 @@ void VMManager::UpdateRunningGame(bool resetting, bool game_starting)
 	// Clear the memory card eject notification again when booting for the first time, or starting.
 	// Otherwise, games think the card was removed on boot.
 	if (game_starting || resetting)
-		ClearMcdEjectTimeoutNow();
+		AutoEject::ClearAll();
 
 	// Check this here, for two cases: dynarec on, and when enable cheats is set per-game.
 	if (s_patches_crc != s_game_crc)
 		ReloadPatches(game_starting, false);
+
+#ifdef ENABLE_ACHIEVEMENTS
+	// Per-game ini enabling of hardcore mode. We need to re-enforce the settings if so.
+	if (game_starting && Achievements::ResetChallengeMode())
+		ApplySettings();
+#endif
 
 	GetMTGS().SendGameCRC(new_crc);
 
@@ -882,9 +892,6 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 	if (!GSDumpReplayer::IsReplayingDump() && !CheckBIOSAvailability())
 		return false;
 
-	Console.WriteLn("Allocating memory map...");
-	s_vm_memory->CommitAll();
-
 	Console.WriteLn("Opening CDVD...");
 	if (!DoCDVDopen())
 	{
@@ -908,7 +915,7 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 	};
 
 	Console.WriteLn("Opening SPU2...");
-	if (SPU2init() != 0 || SPU2open() != 0)
+	if (SPU2init(false) != 0 || SPU2open() != 0)
 	{
 		Host::ReportErrorAsync("Startup Error", "Failed to initialize SPU2.");
 		SPU2shutdown();
@@ -1067,6 +1074,7 @@ void VMManager::Shutdown(bool save_resume_state)
 
 	ForgetLoadedPatches();
 	R3000A::ioman::reset();
+	vtlb_Shutdown();
 	USBclose();
 	SPU2close();
 	PADclose();
@@ -1093,8 +1101,6 @@ void VMManager::Shutdown(bool save_resume_state)
 	DEV9shutdown();
 	GSshutdown();
 
-	s_vm_memory->DecommitAll();
-
 	s_state.store(VMState::Shutdown, std::memory_order_release);
 	Host::OnVMDestroyed();
 }
@@ -1102,17 +1108,8 @@ void VMManager::Shutdown(bool save_resume_state)
 void VMManager::Reset()
 {
 #ifdef ENABLE_ACHIEVEMENTS
-	const bool previous_challenge_mode = Achievements::ChallengeModeActive();
 	if (!Achievements::OnReset())
 		return;
-
-	if (Achievements::ChallengeModeActive() && !previous_challenge_mode)
-	{
-		// Hardcore mode enabled, so reload settings. This only covers the BIOS
-		// portion of the boot, once the game loads we'll reset anyway, but better
-		// to change things like the speed now rather than later.
-		ApplySettings();
-	}
 #endif
 
 	const bool game_was_started = g_GameStarted;
@@ -1384,7 +1381,7 @@ void VMManager::SetLimiterMode(LimiterModeType type)
 
 	EmuConfig.LimiterMode = type;
 	gsUpdateFrequency(EmuConfig);
-	GetMTGS().SetVSync(EmuConfig.GetEffectiveVsyncMode());
+	GetMTGS().UpdateVSyncMode();
 }
 
 void VMManager::FrameAdvance(u32 num_frames /*= 1*/)
@@ -1485,6 +1482,7 @@ void VMManager::Execute()
 		// We need to switch the cpus out, and reset the new ones if so.
 		s_cpu_provider_pack->ApplyConfig();
 		SysClearExecutionCache();
+		vtlb_ResetFastmem();
 	}
 
 	// Execute until we're asked to stop.
@@ -1563,6 +1561,9 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	SysClearExecutionCache();
 	memBindConditionalHandlers();
 
+	if (EmuConfig.Cpu.Recompiler.EnableFastmem != old_config.Cpu.Recompiler.EnableFastmem)
+		vtlb_ResetFastmem();
+
 	// did we toggle recompilers?
 	if (EmuConfig.Cpu.CpusChanged(old_config.Cpu))
 	{
@@ -1593,7 +1594,6 @@ void VMManager::CheckForGSConfigChanges(const Pcsx2Config& old_config)
 	UpdateVSyncRate();
 	frameLimitReset();
 	GetMTGS().ApplySettings();
-	GetMTGS().SetVSync(EmuConfig.GetEffectiveVsyncMode());
 }
 
 void VMManager::CheckForFramerateConfigChanges(const Pcsx2Config& old_config)
@@ -1605,7 +1605,7 @@ void VMManager::CheckForFramerateConfigChanges(const Pcsx2Config& old_config)
 	gsUpdateFrequency(EmuConfig);
 	UpdateVSyncRate();
 	frameLimitReset();
-	GetMTGS().SetVSync(EmuConfig.GetEffectiveVsyncMode());
+	GetMTGS().UpdateVSyncMode();
 }
 
 void VMManager::CheckForPatchConfigChanges(const Pcsx2Config& old_config)
@@ -1647,7 +1647,7 @@ void VMManager::CheckForSPU2ConfigChanges(const Pcsx2Config& old_config)
 
 	SPU2close();
 	SPU2shutdown();
-	if (SPU2init() != 0 || SPU2open() != 0)
+	if (SPU2init(true) != 0 || SPU2open() != 0)
 	{
 		Console.Error("(CheckForSPU2ConfigChanges) Failed to reopen SPU2, we'll probably crash :(");
 		return;
@@ -1702,8 +1702,8 @@ void VMManager::CheckForMemoryCardConfigChanges(const Pcsx2Config& old_config)
 			if (EmuConfig.Mcd[index].Enabled != old_config.Mcd[index].Enabled ||
 				EmuConfig.Mcd[index].Filename != old_config.Mcd[index].Filename)
 			{
-				Console.WriteLn("Replugging memory card %u (port %u slot %u) due to source change", index, port, slot);
-				SetForceMcdEjectTimeoutNow(port, slot);
+				Console.WriteLn("Ejecting memory card %u (port %u slot %u) due to source change", index, port, slot);
+				AutoEject::Set(port, slot);
 			}
 		}
 	}
@@ -1837,6 +1837,8 @@ void VMManager::WarnAboutUnsafeSettings()
 		messages += ICON_FA_TACHOMETER_ALT " Cycle rate/skip is not at default, this may crash or make games run too slow.\n";
 	if (EmuConfig.SPU2.SynchMode != Pcsx2Config::SPU2Options::SynchronizationMode::TimeStretch)
 		messages += ICON_FA_VOLUME_MUTE " Audio is not using time stretch synchronization, this may break FMVs.\n";
+	if (EmuConfig.GS.UpscaleMultiplier < 1.0f)
+		messages += ICON_FA_TV " Upscale multiplier is below native, this will break rendering.\n";
 	if (EmuConfig.GS.HWMipmap != HWMipmapLevel::Automatic)
 		messages += ICON_FA_IMAGES " Mipmapping is not set to automatic. This may break rendering in some games.\n";
 	if (EmuConfig.GS.TextureFiltering != BiFiltering::PS2)

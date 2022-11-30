@@ -127,6 +127,8 @@ private:
 	void SwSpriteRender();
 	bool CanUseSwSpriteRender();
 
+	bool PossibleCLUTDraw();
+	bool PossibleCLUTDrawAggressive();
 	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
 	bool SwPrimRender();
 
@@ -177,7 +179,7 @@ public:
 
 	void SetGameCRC(u32 crc, int options) override;
 	bool CanUpscale() override;
-	int GetUpscaleMultiplier() override;
+	float GetUpscaleMultiplier() override;
 	void Lines2Sprites();
 	bool VerifyIndices();
 	template <GSHWDrawConfig::VSExpand Expand> void ExpandIndices();

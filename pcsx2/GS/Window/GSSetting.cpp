@@ -54,7 +54,7 @@ const char* dialog_message(int ID, bool* updateText)
 				"Minimum:\nEnables CRC lookup for special post processing effects.\n\n"
 				"Aggressive:\nUse more aggressive CRC hacks.\n"
 				"Removes effects in some games which make the image appear sharper/clearer.\n"
-				"Affected games: AC4, BleachBB, Bully, DBZBT 2 & 3, DeathByDegrees, Evangelion, FF games, FightingBeautyWulong, GOW 1 & 2, Kunoichi, IkkiTousen, Okami, Oneechanbara2, OnimushaDoD, RDRevolver, Simple2000Vol114, SoTC, SteambotChronicles, Tekken5, Ultraman, XenosagaE3, Yakuza 1 & 2.\n");
+				"Affected games: AC4, DBZBT 2 & 3, DeathByDegrees, Evangelion, FF games, FightingBeautyWulong, Kunoichi, Okami, Oneechanbara2, OnimushaDoD, RDRevolver, Simple2000Vol114, SteambotChronicles, Tekken5, Ultraman, XenosagaE3, Yakuza 1 & 2.\n");
 		case IDC_SKIPDRAWEND:
 		case IDC_SKIPDRAWHACKEDIT:
 		case IDC_SKIPDRAWSTART:
@@ -164,6 +164,12 @@ const char* dialog_message(int ID, bool* updateText)
 		case IDC_GEOMETRY_SHADER_OVERRIDE:
 			return cvtString("Allows the GPU instead of just the CPU to transform lines into sprites. This reduces CPU load and bandwidth requirement, but it is heavier on the GPU.\n"
 				"Automatic detection is recommended.");
+		case IDC_SPIN_GPU:
+			return cvtString("Submits useless work to the GPU during readbacks to prevent it from going into powersave modes.\n"
+				"May improve performance but with a significant increase in power usage.");
+		case IDC_SPIN_CPU:
+			return cvtString("Does useless work on the CPU during readbacks to prevent it from going to into powersave modes.\n"
+				"May improve performance but with a significant increase in power usage.");
 		case IDC_LINEAR_PRESENT:
 			return cvtString("Use bilinear filtering when Upscaling/Downscaling the image to the screen. Disable it if you want a sharper/pixelated output.");
 		// Exclusive for Hardware Renderer

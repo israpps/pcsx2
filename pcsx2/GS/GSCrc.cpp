@@ -26,6 +26,10 @@ const CRC::Game CRC::m_games[] =
 	{0xF95F37EE, ArTonelico2, US, 0},
 	{0x68CE6801, ArTonelico2, JP, 0},
 	{0xCE2C1DBF, ArTonelico2, EU, 0},
+	{0x5C891FF1, Black, US, 0},
+	{0xCAA04879, Black, EU, 0},
+	{0xADDFF505, Black, EU, 0},
+	{0xB3A9F9ED, Black, JP, 0},
 	{0x2113EA2E, MetalSlug6, JP, 0},
 	{0xA6167B59, Lamune, JP, 0},
 	{0xA39517AB, FFX, EU, 0},
@@ -162,7 +166,6 @@ const CRC::Game CRC::m_games[] =
 	{0x1F88BECD, Tekken5, EU, 0}, // language selector...
 	{0x652050D2, Tekken5, US, 0},
 	{0xEA64EF39, Tekken5, KO, 0},
-	{0x9E98B8AE, IkkiTousen, JP, 0},
 	{0x95CC86EF, GiTS, US, 0}, // same CRC also reported as EU
 	{0x2C5BF134, GiTS, US, 0}, // Demo
 	{0xA5768F53, GiTS, JP, 0},

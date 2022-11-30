@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>648</width>
-    <height>481</height>
+    <width>676</width>
+    <height>535</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -72,6 +72,13 @@
        </widget>
       </item>
       <item>
+       <widget class="QCheckBox" name="InstantDMAHack">
+        <property name="text">
+         <string>Instant DMA Hack (Good for cache emulation problems)</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QCheckBox" name="OPHFlagHack">
         <property name="text">
          <string>OPH Flag Hack (For Bleach Blade Battlers)</string>
@@ -103,6 +110,13 @@
        <widget class="QCheckBox" name="VIFFIFOHack">
         <property name="text">
          <string>Emulate VIF FIFO (Correct But Slower)</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="FullVU0SyncHack">
+        <property name="text">
+         <string>Full VU0 Synchronization (Correct But Slower)</string>
         </property>
        </widget>
       </item>

@@ -471,8 +471,15 @@ GSTextureCache::Target* GSTextureCache::LookupTarget(const GIFRegTEX0& TEX0, con
 		// Let's try to find a perfect frame that contains valid data
 		for (auto t : list)
 		{
+			// Only checks that the texure starts at the requested bp, size isn't considered.
 			if (bp == t->m_TEX0.TBP0 && t->m_end_block >= bp)
 			{
+				// If the frame is older than 30 frames (0.5 seconds) then it hasn't been updated for ages, so it's probably not a valid output frame.
+				// The rest of the checks will get better equality, so suffer less from misdetection.
+				// Kind of arbitrary but it's low enough to not break Grandia Xtreme and high enough not to break Mission Impossible Operation Surma.
+				if (t->m_age > 30)
+					continue;
+
 				dst = t;
 				GL_CACHE("TC: Lookup Frame %dx%d, perfect hit: %d (0x%x -> 0x%x %s)", size.x, size.y, dst->m_texture->GetID(), bp, t->m_end_block, psm_str(TEX0.PSM));
 				if (real_h > 0 || real_w > 0)
@@ -482,21 +489,16 @@ GSTextureCache::Target* GSTextureCache::LookupTarget(const GIFRegTEX0& TEX0, con
 			}
 		}
 
-		// 2nd try ! Try to find a frame that include the bp
+		// 2nd try ! Try to find a frame at the requested bp -> bp + size is inside of (or equal to)
 		if (!dst)
 		{
-			const int page_width = std::max(1, (real_w / psm_s.pgs.x));
-			const int page_height = std::max(1, (real_h / psm_s.pgs.y));
-			const int pitch = (std::max(1U, TEX0.TBW) * 64) / psm_s.pgs.x;
-			const u32 end_bp = bp + ((page_width << 5) + ((page_height * pitch) << 5));
-
 			for (auto t : list)
 			{
 				// Make sure the target is inside the texture
-				if (t->m_TEX0.TBP0 < bp && bp <= t->m_end_block && end_bp > t->m_TEX0.TBP0 && end_bp <= t->m_end_block)
+				if (t->m_TEX0.TBP0 <= bp && bp <= t->m_end_block && t->Inside(bp, TEX0.TBW, TEX0.PSM, GSVector4i(0, 0, real_w, real_h)))
 				{
 					dst = t;
-					GL_CACHE("TC: Lookup Frame %dx%d, inclusive hit: %d (0x%x, took 0x%x -> 0x%x %s endbp 0x%x)", size.x, size.y, t->m_texture->GetID(), bp, t->m_TEX0.TBP0, t->m_end_block, psm_str(TEX0.PSM), end_bp);
+					GL_CACHE("TC: Lookup Frame %dx%d, inclusive hit: %d (0x%x, took 0x%x -> 0x%x %s)", size.x, size.y, t->m_texture->GetID(), bp, t->m_TEX0.TBP0, t->m_end_block, psm_str(TEX0.PSM));
 
 					if (real_h > 0 || real_w > 0)
 						ScaleTargetForDisplay(dst, TEX0, real_w, real_h);
@@ -706,6 +708,10 @@ void GSTextureCache::InvalidateVideoMemType(int type, u32 bp)
 	if (GSConfig.UserHacks_DisableDepthSupport)
 		return;
 
+	// The Getaway games need this function disabled for player shadows to work correctly.
+	if (g_gs_renderer->m_game.title == CRC::GetawayGames)
+		return;
+
 	auto& list = m_dst[type];
 	for (auto i = list.begin(); i != list.end(); ++i)
 	{
@@ -874,7 +880,7 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 		auto& list = m_dst[type];
 		for (auto i = list.begin(); i != list.end();)
 		{
-			auto j = i++;
+			auto j = i;
 			Target* t = *j;
 
 			// GH: (I think) this code is completely broken. Typical issue:
@@ -892,11 +898,16 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 						t->m_texture ? t->m_texture->GetID() : 0,
 						t->m_TEX0.TBP0, r.x, r.y, r.z, r.w);
 					t->m_TEX0.TBW = bw;
+					t->m_age = 0;
 					t->m_dirty.push_back(GSDirtyRect(r, psm, bw));
 				}
 				else
 				{
 					// YOLO skipping t->m_TEX0.TBW = bw; It would change the surface offset results...
+					// This code exists because Destruction Derby Arenas uploads a 16x16 CLUT to the same BP as the depth buffer and invalidating the depth is bad (because it's not invalid).
+					// Possibly because the block layout is opposite for the 32bit colour and depth, it never actually overwrites the depth, so this is kind of a miss detection.
+					// The new code rightfully calculates that the depth does not become dirty, but in other cases, like bigger draws of the same format
+					// it might become invalid, so we check below and erase as before if so.
 					const SurfaceOffset so = ComputeSurfaceOffset(off, r, t);
 					if (so.is_valid)
 					{
@@ -922,14 +933,16 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 							r.w
 						);
 					}
-					else
+					if (!ComputeSurfaceOffset(off, r, t).is_valid)
 					{
-						list.erase(j);
+						i = list.erase(j);
 						GL_CACHE("TC: Remove Target(%s) %d (0x%x)", to_string(type),
 							t->m_texture ? t->m_texture->GetID() : 0,
 							t->m_TEX0.TBP0);
 						delete t;
 					}
+					else
+						i++;
 					continue;
 				}
 			}
@@ -941,6 +954,8 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 				// Game: Conflict - Desert Storm (flickering)
 				t->m_dirty_alpha = false;
 			}
+
+			i++;
 
 			// GH: Try to detect texture write that will overlap with a target buffer
 			// TODO Use ComputeSurfaceOffset below.
@@ -968,6 +983,7 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 								t->m_TEX0.TBP0);
 							// TODO: do not add this rect above too
 							t->m_TEX0.TBW = bw;
+							t->m_age = 0;
 							t->m_dirty.push_back(GSDirtyRect(GSVector4i(r.left, r.top - y, r.right, r.bottom - y), psm, bw));
 							continue;
 						}
@@ -994,10 +1010,19 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 							t->m_texture ? t->m_texture->GetID() : 0,
 							t->m_TEX0.TBP0, t->m_end_block,
 							r.left, r.top + y, r.right, r.bottom + y, bw);
-
+						t->m_age = 0;
 						t->m_TEX0.TBW = bw;
 						t->m_dirty.push_back(GSDirtyRect(GSVector4i(r.left, r.top + y, r.right, r.bottom + y), psm, bw));
 						continue;
+					}
+				}
+				else if (GSConfig.UserHacks_TextureInsideRt && t->Overlaps(bp, bw, psm, rect) && GSUtil::HasCompatibleBits(psm, t->m_TEX0.PSM))
+				{
+					const SurfaceOffset so = ComputeSurfaceOffset(off, r, t);
+					if (so.is_valid)
+					{
+						t->m_age = 0;
+						t->m_dirty.push_back(GSDirtyRect(so.b2a_offset, psm, bw));
 					}
 				}
 #endif
@@ -1023,16 +1048,16 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 		r.z,
 		r.w);
 
-	if (GSConfig.HWDisableReadbacks)
-	{
-		Console.Error("Skipping readback of %ux%u @ %u,%u", r.width(), r.height(), r.left, r.top);
-		return;
-	}
-
 	// No depth handling please.
 	if (psm == PSM_PSMZ32 || psm == PSM_PSMZ24 || psm == PSM_PSMZ16 || psm == PSM_PSMZ16S)
 	{
 		GL_INS("ERROR: InvalidateLocalMem depth format isn't supported (%d,%d to %d,%d)", r.x, r.y, r.z, r.w);
+		if (GSConfig.HWDownloadMode != GSHardwareDownloadMode::Enabled)
+		{
+			DevCon.Error("Skipping depth readback of %ux%u @ %u,%u", r.width(), r.height(), r.left, r.top);
+			return;
+		}
+
 		if (!GSConfig.UserHacks_DisableDepthSupport)
 		{
 			auto& dss = m_dst[DepthStencil];
@@ -1059,8 +1084,17 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 		Target* t = *it;
 		if (t->m_TEX0.PSM != PSM_PSMZ32 && t->m_TEX0.PSM != PSM_PSMZ24 && t->m_TEX0.PSM != PSM_PSMZ16 && t->m_TEX0.PSM != PSM_PSMZ16S)
 		{
-			if (GSUtil::HasSharedBits(bp, psm, t->m_TEX0.TBP0, t->m_TEX0.PSM))
+			// Some games like to offset their GS download memory addresses by
+			// using overly big source Y position values.
+			// Checking for targets that overlap with the requested memory region
+			// instead of just comparing TBPs should fix that.
+			// For example, this fixes Judgement ring rendering in Shadow Hearts 2.
+			// Be wary of old targets being misdetected, set a sensible range of 30 frames (like Display source lookups).
+			if (t->Overlaps(bp, bw, psm, r) && t->m_TEX0.TBP0 >= bp && GSUtil::HasSharedBits(psm, t->m_TEX0.PSM) && t->m_age <= 30)
 			{
+				// Enforce full invalidation if BP's don't match.
+				const GSVector4i targetr = (bp == t->m_TEX0.TBP0) ? r : t->m_valid;
+				
 				// GH Note: Read will do a StretchRect and then will sizzle data to the GS memory
 				// t->m_valid will do the full target texture whereas r.intersect(t->m_valid) will be limited
 				// to the useful part for the transfer.
@@ -1082,16 +1116,21 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 				if (t->m_32_bits_fmt && t->m_TEX0.PSM > PSM_PSMCT24)
 					t->m_TEX0.PSM = PSM_PSMCT32;
 
-				if (GSConfig.UserHacks_DisablePartialInvalidation)
+				if (GSConfig.HWDownloadMode != GSHardwareDownloadMode::Enabled)
 				{
-					Read(t, r.rintersect(t->m_valid));
+					const GSVector4i rb_rc((!GSConfig.UserHacks_DisablePartialInvalidation && targetr.x == 0 && targetr.y == 0) ? t->m_valid : targetr.rintersect(t->m_valid));
+					DevCon.Error("Skipping depth readback of %ux%u @ %u,%u", rb_rc.width(), rb_rc.height(), rb_rc.left, rb_rc.top);
+				}
+				else if (GSConfig.UserHacks_DisablePartialInvalidation)
+				{
+					Read(t, targetr.rintersect(t->m_valid));
 				}
 				else
 				{
-					if (r.x == 0 && r.y == 0) // Full screen read?
+					if (targetr.x == 0 && targetr.y == 0) // Full screen read?
 						Read(t, t->m_valid);
 					else // Block level read?
-						Read(t, r.rintersect(t->m_valid));
+						Read(t, targetr.rintersect(t->m_valid));
 				}
 			}
 		}
@@ -1200,11 +1239,6 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 	if (!src || !dst || src->m_texture->GetScale() != dst->m_texture->GetScale())
 		return false;
 
-	// We don't want to copy "old" data that the game has overwritten with writes,
-	// so flush any overlapping dirty area.
-	src->UpdateIfDirtyIntersects(GSVector4i(sx, sy, sx + w, sy + h));;
-	dst->UpdateIfDirtyIntersects(GSVector4i(dx, dy, dx + w, dy + h));
-
 	// Scale coordinates.
 	const GSVector2 scale(src->m_texture->GetScale());
 	const int scaled_sx = static_cast<int>(sx * scale.x);
@@ -1213,6 +1247,15 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 	const int scaled_dy = static_cast<int>(dy * scale.y);
 	const int scaled_w = static_cast<int>(w * scale.x);
 	const int scaled_h = static_cast<int>(h * scale.y);
+
+	// The source isn't in our texture, otherwise it could falsely expand the texture causing a misdetection later, which then renders black.
+	if ((scaled_sx + scaled_w) > src->m_texture->GetWidth() || (scaled_sy + scaled_h) > src->m_texture->GetHeight())
+		return false;
+
+	// We don't want to copy "old" data that the game has overwritten with writes,
+	// so flush any overlapping dirty area.
+	src->UpdateIfDirtyIntersects(GSVector4i(sx, sy, sx + w, sy + h));
+	dst->UpdateIfDirtyIntersects(GSVector4i(dx, dy, dx + w, dy + h));
 
 	// Expand the target when we used a more conservative size.
 	const int required_dh = scaled_dy + scaled_h;
@@ -1229,11 +1272,8 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 	}
 
 	// Make sure the copy doesn't go out of bounds (it shouldn't).
-	if ((scaled_sx + scaled_w) > src->m_texture->GetWidth() || (scaled_sy + scaled_h) > src->m_texture->GetHeight() ||
-		(scaled_dx + scaled_w) > dst->m_texture->GetWidth() || (scaled_dy + scaled_h) > dst->m_texture->GetHeight())
-	{
+	if ((scaled_dx + scaled_w) > dst->m_texture->GetWidth() || (scaled_dy + scaled_h) > dst->m_texture->GetHeight())
 		return false;
-	}
 
 	g_gs_device->CopyRect(src->m_texture, dst->m_texture,
 		GSVector4i(scaled_sx, scaled_sy, scaled_sx + scaled_w, scaled_sy + scaled_h),
@@ -1859,8 +1899,8 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 
 		if (GSConfig.UserHacks_HalfPixelOffset == 1 && hack)
 		{
-			modxy = static_cast<float>(g_gs_renderer->GetUpscaleMultiplier());
-			switch (g_gs_renderer->GetUpscaleMultiplier())
+			modxy = g_gs_renderer->GetUpscaleMultiplier();
+			switch (static_cast<int>(std::round(g_gs_renderer->GetUpscaleMultiplier())))
 			{
 				case 2: case 4: case 6: case 8: modxy += 0.2f; break;
 				case 3: case 7:                 modxy += 0.1f; break;

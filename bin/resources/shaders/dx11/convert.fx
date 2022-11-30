@@ -125,7 +125,7 @@ PS_OUTPUT ps_hdr_init(PS_INPUT input)
 {
 	PS_OUTPUT output;
 	float4 value = sample_c(input.t);
-	output.c = float4(round(value.rgb * 255), value.a);
+	output.c = float4(round(value.rgb * 255) / 65535, value.a);
 	return output;
 }
 
@@ -133,7 +133,7 @@ PS_OUTPUT ps_hdr_resolve(PS_INPUT input)
 {
 	PS_OUTPUT output;
 	float4 value = sample_c(input.t);
-	output.c = float4(float3(int3(value.rgb) & 255) / 255, value.a);
+	output.c = float4(float3(uint3(value.rgb * 65535.5) & 255) / 255, value.a);
 	return output;
 }
 
@@ -262,14 +262,6 @@ PS_OUTPUT ps_convert_rgba_8i(PS_INPUT input)
 {
 	PS_OUTPUT output;
 
-	// Potential speed optimization. There is a high probability that
-	// game only want to extract a single channel (blue). It will allow
-	// to remove most of the conditional operation and yield a +2/3 fps
-	// boost on MGS3
-	//
-	// Hypothesis wrong in Prince of Persia ... Seriously WTF !
-	//#define ONLY_BLUE;
-
 	// Convert a RGBA texture into a 8 bits packed texture
 	// Input column: 8x2 RGBA pixels
 	// 0: 8 RGBA
@@ -279,73 +271,28 @@ PS_OUTPUT ps_convert_rgba_8i(PS_INPUT input)
 	// 1: 8 R | 8 B
 	// 2: 8 G | 8 A
 	// 3: 8 G | 8 A
-	float c;
+	uint2 pos = uint2(input.p.xy);
 
-	uint2 sel = uint2(input.p.xy) % uint2(16u, 16u);
-	int2  tb  = ((int2(input.p.xy) & ~int2(15, 3)) >> 1);
+	// Collapse separate R G B A areas into their base pixel
+	uint2 block = (pos & ~uint2(15u, 3u)) >> 1;
+	uint2 subblock = pos & uint2(7u, 1u);
+	uint2 coord = block | subblock;
 
-	int ty   = tb.y | (int(input.p.y) & 1);
-	int txN  = tb.x | (int(input.p.x) & 7);
-	int txH  = tb.x | ((int(input.p.x) + 4) & 7);
+	// Apply offset to cols 1 and 2
+	uint is_col23 = pos.y & 4u;
+	uint is_col13 = pos.y & 2u;
+	uint is_col12 = is_col23 ^ (is_col13 << 1);
+	coord.x ^= is_col12; // If cols 1 or 2, flip bit 3 of x
 
-	txN *= PS_SCALE_FACTOR;
-	txH *= PS_SCALE_FACTOR;
-	ty  *= PS_SCALE_FACTOR;
-
-	// TODO investigate texture gather
-	float4 cN = Texture.Load(int3(txN, ty, 0));
-	float4 cH = Texture.Load(int3(txH, ty, 0));
-
-
-	if ((sel.y & 4u) == 0u)
-	{
-#ifdef ONLY_BLUE
-		c = cN.b;
-#else
-		// Column 0 and 2
-		if ((sel.y & 3u) < 2u)
-		{
-			// First 2 lines of the col
-			if (sel.x < 8u)
-				c = cN.r;
-			else
-				c = cN.b;
-		}
-		else
-		{
-			if (sel.x < 8u)
-				c = cH.g;
-			else
-				c = cH.a;
-		}
-#endif
-	}
+	if (floor(PS_SCALE_FACTOR) != PS_SCALE_FACTOR)
+		coord = uint2(float2(coord) * PS_SCALE_FACTOR);
 	else
-	{
-#ifdef ONLY_BLUE
-		c = cH.b;
-#else
-		// Column 1 and 3
-		if ((sel.y & 3u) < 2u)
-		{
-			// First 2 lines of the col
-			if (sel.x < 8u)
-				c = cH.r;
-			else
-				c = cH.b;
-		}
-		else
-		{
-			if (sel.x < 8u)
-				c = cN.g;
-			else
-				c = cN.a;
-		}
-#endif
-	}
+		coord *= PS_SCALE_FACTOR;
 
-	output.c = (float4)(c); // Divide by something here?
-
+	float4 pixel = Texture.Load(int3(int2(coord), 0));
+	float2 sel0 = (pos.y & 2u) == 0u ? pixel.rb : pixel.ga;
+	float  sel1 = (pos.x & 8u) == 0u ? sel0.x : sel0.y;
+	output.c = (float4)(sel1); // Divide by something here?
 	return output;
 }
 

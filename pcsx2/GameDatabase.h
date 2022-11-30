@@ -82,6 +82,7 @@ namespace GameDatabaseSchema
 		TexturePreloading,
 		Deinterlace,
 		CPUSpriteRenderBW,
+		CPUCLUTRender,
 		GPUPaletteConversion,
 
 		Count
@@ -96,6 +97,7 @@ namespace GameDatabaseSchema
 		RoundMode vuRoundMode = RoundMode::Undefined;
 		ClampMode eeClampMode = ClampMode::Undefined;
 		ClampMode vuClampMode = ClampMode::Undefined;
+		uint32_t cdvdOffset = 0;
 		std::vector<GamefixId> gameFixes;
 		std::vector<std::pair<SpeedhackId, int>> speedHacks;
 		std::vector<std::pair<GSHWFixId, s32>> gsHWFixes;

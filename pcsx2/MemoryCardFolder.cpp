@@ -290,6 +290,7 @@ void FolderMemoryCard::LoadMemoryCardData(const u32 sizeInClusters, const bool e
 		MemoryCardFileEntry* const rootDirEntry = &m_fileEntryDict[m_superBlock.data.rootdir_cluster].entries[0];
 		AddFolder(rootDirEntry, m_folderName, nullptr, enableFiltering, filter);
 
+
 #ifdef DEBUG_WRITE_FOLDER_CARD_IN_MEMORY_TO_FILE_ON_CHANGE
 		WriteToFile(m_folderName.GetFullPath().RemoveLast() + L"-debug_" + wxDateTime::Now().Format(L"%Y-%m-%d-%H-%M-%S") + L"_load.ps2");
 #endif
@@ -491,7 +492,7 @@ bool FolderMemoryCard::AddFolder(MemoryCardFileEntry* const dirEntry, const std:
 			if (file.m_isFile)
 			{
 				// don't load files in the root dir if we're filtering; no official software stores files there
-				if (enableFiltering && parent == nullptr)
+				if (parent == nullptr)
 				{
 					continue;
 				}
@@ -1007,7 +1008,9 @@ s32 FolderMemoryCard::Read(u8* dest, u32 adr, int size)
 			FolderMemoryCard::CalculateECC(ecc + (i * 3), &data[i * 0x80]);
 		}
 
-		memcpy(dest + eccOffset, ecc, eccLength);
+		pxAssert(static_cast<u32>(size) >= eccOffset);
+		const u32 copySize = std::min((u32)size - eccOffset, eccLength);
+		memcpy(dest + eccOffset, ecc, copySize);
 	}
 
 	SetTimeLastReadToNow();
@@ -2071,7 +2074,15 @@ void FileAccessHelper::WriteIndex(const std::string& baseFolderName, MemoryCardF
 	pxAssert(entry->IsFile());
 
 	std::string folderName(baseFolderName);
-	parent->GetPath(&folderName);
+	if (parent != nullptr)
+	{
+		parent->GetPath(&folderName);
+	}
+	else
+	{
+		Console.Warning(fmt::format("(FileAccesHelper::WriteIndex()) '{}' has null parent",Path::Combine(baseFolderName,(const char*)entry->entry.data.name)));
+	}
+
 	char cleanName[sizeof(entry->entry.data.name)];
 	memcpy(cleanName, (const char*)entry->entry.data.name, sizeof(cleanName));
 	FileAccessHelper::CleanMemcardFilename(cleanName);
@@ -2281,6 +2292,12 @@ void MemoryCardFileMetadataReference::GetInternalPath(std::string* fileName) con
 
 FolderMemoryCardAggregator::FolderMemoryCardAggregator()
 {
+#ifdef _WIN32
+	// Override Windows' default allowance for open files. Folder memory cards with more than 32 MB of content are likely to contain more than 512 individual files.
+	// Unix platforms seem to use 1024 by default.
+	_setmaxstdio(1024);
+#endif
+
 	for (uint i = 0; i < TotalCardSlots; ++i)
 	{
 		m_cards[i].SetSlot(i);

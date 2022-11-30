@@ -343,7 +343,9 @@ static void UpdateLoggingSinks(bool system_console, bool file_log)
 	{
 		if (!emuLog)
 		{
-			emuLogName = Path::Combine(EmuFolders::Logs, "emulog.txt");
+			if (emuLogName.empty())
+				emuLogName = Path::Combine(EmuFolders::Logs, "emulog.txt");
+
 			emuLog = FileSystem::OpenCFile(emuLogName.c_str(), "wb");
 			file_log = (emuLog != nullptr);
 		}
@@ -363,6 +365,22 @@ static void UpdateLoggingSinks(bool system_console, bool file_log)
 		Console_SetActiveHandler(ConsoleWriter_WinQt);
 	else
 		Console_SetActiveHandler(ConsoleWriter_Null);
+}
+
+void CommonHost::SetFileLogPath(std::string path)
+{
+	if (emuLogName == path)
+		return;
+
+	emuLogName = std::move(path);
+
+	// reopen on change
+	if (emuLog)
+	{
+		std::fclose(emuLog);
+		if (!emuLogName.empty())
+			emuLog = FileSystem::OpenCFile(emuLogName.c_str(), "wb");
+	}
 }
 
 void CommonHost::SetBlockSystemConsole(bool block)
@@ -386,6 +404,10 @@ void CommonHost::UpdateLogging(SettingsInterface& si)
 	DevConWriterEnabled = any_logging_sinks && (IsDevBuild || si.GetBoolValue("Logging", "EnableVerbose", false));
 	SysConsole.eeConsole.Enabled = any_logging_sinks && si.GetBoolValue("Logging", "EnableEEConsole", false);
 	SysConsole.iopConsole.Enabled = any_logging_sinks && si.GetBoolValue("Logging", "EnableIOPConsole", false);
+	SysTrace.IOP.R3000A.Enabled = true;
+	SysTrace.IOP.COP2.Enabled = true;
+	SysTrace.IOP.Memory.Enabled = true;
+	SysTrace.SIF.Enabled = true;
 
 	// Input Recording Logs
 	SysConsole.recordingConsole.Enabled = any_logging_sinks && si.GetBoolValue("Logging", "EnableInputRecordingLogs", true);

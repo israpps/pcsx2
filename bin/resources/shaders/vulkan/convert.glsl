@@ -1,5 +1,5 @@
 #ifndef PS_SCALE_FACTOR
-#define PS_SCALE_FACTOR 1
+#define PS_SCALE_FACTOR 1.0
 #endif
 
 #ifdef VERTEX_SHADER
@@ -94,7 +94,7 @@ void ps_datm0()
 void ps_hdr_init()
 {
 	vec4 value = sample_c(v_tex);
-	o_col0 = vec4(roundEven(value.rgb * 255.0f), value.a);
+	o_col0 = vec4(roundEven(value.rgb * 255.0f) / 65535.0f, value.a);
 }
 #endif
 
@@ -102,7 +102,7 @@ void ps_hdr_init()
 void ps_hdr_resolve()
 {
 	vec4 value = sample_c(v_tex);
-	o_col0 = vec4(vec3(ivec3(value.rgb) & 255) / 255.0f, value.a);
+	o_col0 = vec4(vec3(uvec3(value.rgb * 65535.5f) & 255u) / 255.0f, value.a);
 }
 #endif
 
@@ -243,14 +243,6 @@ void ps_convert_rgb5a1_float16_biln()
 #ifdef ps_convert_rgba_8i
 void ps_convert_rgba_8i()
 {
-	// Potential speed optimization. There is a high probability that
-	// game only want to extract a single channel (blue). It will allow
-	// to remove most of the conditional operation and yield a +2/3 fps
-	// boost on MGS3
-	//
-	// Hypothesis wrong in Prince of Persia ... Seriously WTF !
-	//#define ONLY_BLUE;
-
 	// Convert a RGBA texture into a 8 bits packed texture
 	// Input column: 8x2 RGBA pixels
 	// 0: 8 RGBA
@@ -260,72 +252,28 @@ void ps_convert_rgba_8i()
 	// 1: 8 R | 8 B
 	// 2: 8 G | 8 A
 	// 3: 8 G | 8 A
-	float c;
+  uvec2 pos = uvec2(gl_FragCoord.xy);
 
-	uvec2 sel = uvec2(gl_FragCoord.xy) % uvec2(16u, 16u);
-	ivec2 tb  = ((ivec2(gl_FragCoord.xy) & ~ivec2(15, 3)) >> 1);
+  // Collapse separate R G B A areas into their base pixel
+  uvec2 block = (pos & ~uvec2(15u, 3u)) >> 1;
+  uvec2 subblock = pos & uvec2(7u, 1u);
+  uvec2 coord = block | subblock;
 
-	int ty   = tb.y | (int(gl_FragCoord.y) & 1);
-	int txN  = tb.x | (int(gl_FragCoord.x) & 7);
-	int txH  = tb.x | ((int(gl_FragCoord.x) + 4) & 7);
+  // Apply offset to cols 1 and 2
+  uint is_col23 = pos.y & 4u;
+  uint is_col13 = pos.y & 2u;
+  uint is_col12 = is_col23 ^ (is_col13 << 1);
+  coord.x ^= is_col12; // If cols 1 or 2, flip bit 3 of x
 
-	txN *= PS_SCALE_FACTOR;
-	txH *= PS_SCALE_FACTOR;
-	ty  *= PS_SCALE_FACTOR;
+  if (floor(PS_SCALE_FACTOR) != PS_SCALE_FACTOR)
+    coord = uvec2(vec2(coord) * PS_SCALE_FACTOR);
+  else
+    coord *= uvec2(PS_SCALE_FACTOR);
 
-	// TODO investigate texture gather
-	vec4 cN = texelFetch(samp0, ivec2(txN, ty), 0);
-	vec4 cH = texelFetch(samp0, ivec2(txH, ty), 0);
-
-
-	if ((sel.y & 4u) == 0u)
-	{
-#ifdef ONLY_BLUE
-		c = cN.b;
-#else
-		// Column 0 and 2
-		if ((sel.y & 3u) < 2u)
-		{
-			// First 2 lines of the col
-			if (sel.x < 8u)
-				c = cN.r;
-			else
-				c = cN.b;
-		}
-		else
-		{
-			if (sel.x < 8u)
-				c = cH.g;
-			else
-				c = cH.a;
-		}
-#endif
-	}
-	else
-	{
-#ifdef ONLY_BLUE
-		c = cH.b;
-#else
-		// Column 1 and 3
-		if ((sel.y & 3u) < 2u)
-		{
-			// First 2 lines of the col
-			if (sel.x < 8u)
-				c = cH.r;
-			else
-				c = cH.b;
-		}
-		else
-		{
-			if (sel.x < 8u)
-				c = cN.g;
-			else
-				c = cN.a;
-		}
-#endif
-	}
-
-	o_col0 = vec4(c); // Divide by something here?
+  vec4 pixel = texelFetch(samp0, ivec2(coord), 0);
+  vec2  sel0 = (pos.y & 2u) == 0u ? pixel.rb : pixel.ga;
+  float sel1 = (pos.x & 8u) == 0u ? sel0.x : sel0.y;
+  o_col0 = vec4(sel1); // Divide by something here?
 }
 #endif
 

@@ -333,7 +333,7 @@ void main()
 #define PS_TALES_OF_ABYSS_HLE 0
 #define PS_URBAN_CHAOS_HLE 0
 #define PS_INVALID_TEX0 0
-#define PS_SCALE_FACTOR 1
+#define PS_SCALE_FACTOR 1.0
 #define PS_HDR 0
 #define PS_COLCLIP 0
 #define PS_BLEND_A 0
@@ -906,7 +906,7 @@ vec4 ps_color()
 #if PS_FST == 0 && PS_INVALID_TEX0 == 1
 	// Re-normalize coordinate from invalid GS to corrected texture size
 	vec2 st = (vsIn.t.xy * WH.xy) / (vsIn.t.w * WH.zw);
-	// no st_int yet
+	vec2 st_int = (vsIn.ti.zw * WH.xy) / (vsIn.t.w * WH.zw);
 #elif PS_FST == 0
 	vec2 st = vsIn.t.xy / vsIn.t.w;
 	vec2 st_int = vsIn.ti.zw / vsIn.t.w;
@@ -946,7 +946,7 @@ void ps_fbmask(inout vec4 C)
 {
 	#if PS_FBMASK
 		vec4 RT = trunc(sample_from_rt() * 255.0f + 0.1f);
-		C = vec4((uvec4(ivec4(C)) & (FbMask ^ 0xFFu)) | (uvec4(RT) & FbMask));
+		C = vec4((uvec4(C) & ~FbMask) | (uvec4(RT) & FbMask));
 	#endif
 }
 
@@ -967,18 +967,9 @@ void ps_dither(inout vec3 C)
 
 void ps_color_clamp_wrap(inout vec3 C)
 {
-#if PS_HDR && PS_COLCLIP // COLCLIP flag indicates accumulation blend under HDR
-    ivec3 color = ivec3(C);
-#if PS_DFMT == FMT_16
-    color &= 0xF8;
-#endif
-    // -128 to 127 gives us longer before we run out of float precision
-    // Especially for games that mainly use 1 and 255 (sly), since that maps to 1 and -1
-    C = vec3((color << 24) >> 24);
-
     // When dithering the bottom 3 bits become meaningless and cause lines in the picture
     // so we need to limit the color depth on dithered items
-#elif SW_BLEND || PS_DITHER || PS_FBMASK
+#if SW_BLEND || PS_DITHER || PS_FBMASK
 
     // Correct the Color value based on the output format
 #if PS_COLCLIP == 0 && PS_HDR == 0
@@ -995,7 +986,7 @@ void ps_color_clamp_wrap(inout vec3 C)
 #if PS_DFMT == FMT_16 && PS_BLEND_MIX == 0
     // In 16 bits format, only 5 bits of colors are used. It impacts shadows computation of Castlevania
     C = vec3(ivec3(C) & ivec3(0xF8));
-#elif PS_COLCLIP == 1 && PS_HDR == 0
+#elif PS_COLCLIP == 1 || PS_HDR == 1
     C = vec3(ivec3(C) & ivec3(0xFF));
 #endif
 
@@ -1062,8 +1053,9 @@ void ps_blend(inout vec4 Color, inout float As)
 
 		// As/Af clamp alpha for Blend mix
 		// We shouldn't clamp blend mix with clr1 as we want alpha higher
+		float C_clamped = C;
 		#if PS_BLEND_MIX > 0 && PS_CLR_HW != 1
-				C = min(C, 1.0f);
+				C_clamped = min(C_clamped, 1.0f);
 		#endif
 
 		#if PS_BLEND_A == PS_BLEND_B
@@ -1076,9 +1068,9 @@ void ps_blend(inout vec4 Color, inout float As)
 		// Based on the scripts at the above link, the ideal choice for Intel GPUs is 126/256, AMD 120/256.  Nvidia is a lost cause.
 		// 124/256 seems like a reasonable compromise, providing the correct answer 99.3% of the time on Intel (vs 99.6% for 126/256), and 97% of the time on AMD (vs 97.4% for 120/256).
 		#elif PS_BLEND_MIX == 2
-			Color.rgb = ((A - B) * C + D) + (124.0f/256.0f);
+			Color.rgb = ((A - B) * C_clamped + D) + (124.0f/256.0f);
 		#elif PS_BLEND_MIX == 1
-			Color.rgb = ((A - B) * C + D) - (124.0f/256.0f);
+			Color.rgb = ((A - B) * C_clamped + D) - (124.0f/256.0f);
 		#else
 				Color.rgb = trunc((A - B) * C + D);
 		#endif
@@ -1096,6 +1088,14 @@ void ps_blend(inout vec4 Color, inout float As)
 				float min_color = min(min(Color.r, Color.g), Color.b);
 				float alpha_compensate = max(1.0f, min_color / 255.0f);
 				As -= alpha_compensate;
+		#elif PS_CLR_HW == 2
+				// Compensate slightly for Cd*(As + 1) - Cs*As.
+				// The initial factor we chose is 1 (0.00392)
+				// as that is the minimum color Cd can be,
+				// then we multiply by alpha to get the minimum
+				// blended value it can be.
+				float color_compensate = 1.0f * (C + 1.0f);
+				Color.rgb -= vec3(color_compensate);
 		#endif
 
 	#else
@@ -1235,8 +1235,8 @@ void main()
   ps_fbmask(C);
 
 #if !PS_NO_COLOR
-#if PS_HDR
-	o_col0 = vec4(C.rgb, C.a / 255.0f);
+#if PS_HDR == 1
+	o_col0 = vec4(C.rgb / 65535.0f, C.a / 255.0f);
 #else
 	o_col0 = C / 255.0f;
 #endif

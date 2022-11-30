@@ -26,6 +26,21 @@
 #ifdef __APPLE__
 #include "GSMTLSharedHeader.h"
 
+static constexpr bool IsCommandBufferCompleted(MTLCommandBufferStatus status)
+{
+	switch (status)
+	{
+		case MTLCommandBufferStatusNotEnqueued:
+		case MTLCommandBufferStatusEnqueued:
+		case MTLCommandBufferStatusCommitted:
+		case MTLCommandBufferStatusScheduled:
+			return false;
+		case MTLCommandBufferStatusCompleted:
+		case MTLCommandBufferStatusError:
+			return true;
+	}
+}
+
 GSDevice* MakeGSDeviceMTL()
 {
 	return new GSDeviceMTL();
@@ -214,6 +229,7 @@ id<MTLCommandBuffer> GSDeviceMTL::GetRenderCmdBuf()
 {
 	if (!m_current_render_cmdbuf)
 	{
+		m_encoders_in_current_cmdbuf = 0;
 		m_current_render_cmdbuf = MRCRetain([m_queue commandBuffer]);
 		pxAssertRel(m_current_render_cmdbuf, "Failed to create draw command buffer!");
 		[m_current_render_cmdbuf setLabel:@"Draw"];
@@ -258,15 +274,78 @@ void GSDeviceMTL::FlushEncoders()
 		[m_late_texture_upload_encoder endEncoding];
 		m_late_texture_upload_encoder = nil;
 	}
-	[m_current_render_cmdbuf addCompletedHandler:[backref = m_backref, draw = m_current_draw](id<MTLCommandBuffer> buf)
+	u32 spin_cycles = 0;
+	constexpr double s_to_ns = 1000000000;
+	if (m_spin_timer)
 	{
-		std::lock_guard<std::mutex> guard(backref->first);
-		if (GSDeviceMTL* dev = backref->second)
-			dev->DrawCommandBufferFinished(draw, buf);
-	}];
+		u32 spin_id;
+		{
+			std::lock_guard<std::mutex> guard(m_backref->first);
+			auto draw = m_spin_manager.DrawSubmitted(m_encoders_in_current_cmdbuf);
+			u32 constant_offset = 200000 * m_spin_manager.SpinsPerUnitTime(); // 200µs
+			u32 minimum_spin = 2 * constant_offset; // 400µs (200µs after subtracting constant_offset)
+			u32 maximum_spin = std::max<u32>(1024, 16000000 * m_spin_manager.SpinsPerUnitTime()); // 16ms
+			if (draw.recommended_spin > minimum_spin)
+				spin_cycles = std::min(draw.recommended_spin - constant_offset, maximum_spin);
+			spin_id = draw.id;
+		}
+		[m_current_render_cmdbuf addCompletedHandler:[backref = m_backref, draw = m_current_draw, spin_id](id<MTLCommandBuffer> buf)
+		{
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability"
+			// Starting from kernelStartTime includes time the command buffer spent waiting to execute
+			// This is useful for avoiding issues on GPUs without async compute (Intel) where spinning
+			// delays the next command buffer start, which then makes the spin manager think it should spin more
+			// (If a command buffer contains multiple encoders, the GPU will start before the kernel finishes,
+			//  so we choose kernelStartTime over kernelEndTime)
+			u64 begin = [buf kernelStartTime] * s_to_ns;
+			u64 end = [buf GPUEndTime] * s_to_ns;
+#pragma clang diagnostic pop
+			std::lock_guard<std::mutex> guard(backref->first);
+			if (GSDeviceMTL* dev = backref->second)
+			{
+				dev->DrawCommandBufferFinished(draw, buf);
+				dev->m_spin_manager.DrawCompleted(spin_id, begin, end);
+			}
+		}];
+	}
+	else
+	{
+		[m_current_render_cmdbuf addCompletedHandler:[backref = m_backref, draw = m_current_draw](id<MTLCommandBuffer> buf)
+		{
+			std::lock_guard<std::mutex> guard(backref->first);
+			if (GSDeviceMTL* dev = backref->second)
+				dev->DrawCommandBufferFinished(draw, buf);
+		}];
+	}
 	[m_current_render_cmdbuf commit];
 	m_current_render_cmdbuf = nil;
 	m_current_draw++;
+	if (spin_cycles)
+	{
+		id<MTLCommandBuffer> spinCmdBuf = [m_queue commandBuffer];
+		[spinCmdBuf setLabel:@"Spin"];
+		id<MTLComputeCommandEncoder> spinCmdEncoder = [spinCmdBuf computeCommandEncoder];
+		[spinCmdEncoder setLabel:@"Spin"];
+		[spinCmdEncoder waitForFence:m_spin_fence];
+		[spinCmdEncoder setComputePipelineState:m_spin_pipeline];
+		[spinCmdEncoder setBytes:&spin_cycles length:sizeof(spin_cycles) atIndex:0];
+		[spinCmdEncoder setBuffer:m_spin_buffer offset:0 atIndex:1];
+		[spinCmdEncoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+		[spinCmdEncoder endEncoding];
+		[spinCmdBuf addCompletedHandler:[backref = m_backref, spin_cycles](id<MTLCommandBuffer> buf)
+		{
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability"
+			u64 begin = [buf GPUStartTime] * s_to_ns;
+			u64 end = [buf GPUEndTime] * s_to_ns;
+#pragma clang diagnostic pop
+			std::lock_guard<std::mutex> guard(backref->first);
+			if (GSDeviceMTL* dev = backref->second)
+				dev->m_spin_manager.SpinCompleted(spin_cycles, begin, end);
+		}];
+		[spinCmdBuf commit];
+	}
 }
 
 void GSDeviceMTL::EndRenderPass()
@@ -274,6 +353,8 @@ void GSDeviceMTL::EndRenderPass()
 	if (m_current_render.encoder)
 	{
 		EndDebugGroup(m_current_render.encoder);
+		if (m_spin_timer)
+			[m_current_render.encoder updateFence:m_spin_fence afterStages:MTLRenderStageFragment];
 		[m_current_render.encoder endEncoding];
 		m_current_render.encoder = nil;
 		memset(&m_current_render, 0, offsetof(MainRenderEncoder, depth_sel));
@@ -314,6 +395,8 @@ void GSDeviceMTL::BeginRenderPass(NSString* name, GSTexture* color, MTLLoadActio
 		}
 		return;
 	}
+
+	m_encoders_in_current_cmdbuf++;
 
 	if (m_late_texture_upload_encoder)
 	{
@@ -365,6 +448,13 @@ void GSDeviceMTL::BeginRenderPass(NSString* name, GSTexture* color, MTLLoadActio
 	pxAssertRel(m_current_render.encoder, "Failed to create render encoder!");
 }
 
+void GSDeviceMTL::FrameCompleted()
+{
+	if (m_spin_timer)
+		m_spin_timer--;
+	m_spin_manager.NextFrame();
+}
+
 static constexpr MTLPixelFormat ConvertPixelFormat(GSTexture::Format format)
 {
 	switch (format)
@@ -374,7 +464,7 @@ static constexpr MTLPixelFormat ConvertPixelFormat(GSTexture::Format format)
 		case GSTexture::Format::UInt16:       return MTLPixelFormatR16Uint;
 		case GSTexture::Format::UNorm8:       return MTLPixelFormatA8Unorm;
 		case GSTexture::Format::Color:        return MTLPixelFormatRGBA8Unorm;
-		case GSTexture::Format::FloatColor:   return MTLPixelFormatRGBA32Float;
+		case GSTexture::Format::HDRColor:     return MTLPixelFormatRGBA16Unorm;
 		case GSTexture::Format::DepthStencil: return MTLPixelFormatDepth32Float_Stencil8;
 		case GSTexture::Format::Invalid:      return MTLPixelFormatInvalid;
 		case GSTexture::Format::BC1:          return MTLPixelFormatBC1_RGBA;
@@ -493,18 +583,18 @@ void GSDeviceMTL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex,
 		StretchRect(dTex, full_r, sTex[2], dRect[0], ShaderConvert::YUV);
 }}
 
-void GSDeviceMTL::DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset)
+void GSDeviceMTL::DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset, int bufIdx)
 { @autoreleasepool {
 	id<MTLCommandBuffer> cmdbuf = GetRenderCmdBuf();
 	GSScopedDebugGroupMTL dbg(cmdbuf, @"DoInterlace");
 
-	GSVector4 s = GSVector4(dTex->GetSize());
+	GSVector4 ds = GSVector4(dTex->GetSize());
 
 	GSVector4 sRect(0, 0, 1, 1);
-	GSVector4 dRect(0.f, yoffset, s.x, s.y + yoffset);
+	GSVector4 dRect(0.f, yoffset, ds.x, ds.y + yoffset);
 
 	GSMTLInterlacePSUniform cb = {};
-	cb.ZrH = {0, 1.f / s.y};
+	cb.ZrH = {static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY};
 
 	DoStretchRect(sTex, sRect, dTex, dRect, m_interlace_pipeline[shader], linear, shader > 1 ? LoadAction::DontCareIfFull : LoadAction::Load, &cb, sizeof(cb));
 }}
@@ -581,14 +671,14 @@ bool GSDeviceMTL::Create()
 	if (!GSDevice::Create())
 		return false;
 
-	if (g_host_display->GetRenderAPI() != HostDisplay::RenderAPI::Metal)
+	if (g_host_display->GetRenderAPI() != RenderAPI::Metal)
 		return false;
 
-	if (!g_host_display->HasRenderDevice() || !g_host_display->HasRenderSurface())
+	if (!g_host_display->HasDevice() || !g_host_display->HasSurface())
 		return false;
-	m_dev = *static_cast<const GSMTLDevice*>(g_host_display->GetRenderDevice());
-	m_queue = MRCRetain((__bridge id<MTLCommandQueue>)g_host_display->GetRenderContext());
-	MTLPixelFormat layer_px_fmt = [(__bridge CAMetalLayer*)g_host_display->GetRenderSurface() pixelFormat];
+	m_dev = *static_cast<const GSMTLDevice*>(g_host_display->GetDevice());
+	m_queue = MRCRetain((__bridge id<MTLCommandQueue>)g_host_display->GetContext());
+	MTLPixelFormat layer_px_fmt = [(__bridge CAMetalLayer*)g_host_display->GetSurface() pixelFormat];
 
 	m_features.broken_point_sampler = [[m_dev.dev name] containsString:@"AMD"];
 	m_features.geometry_shader = false;
@@ -608,13 +698,30 @@ bool GSDeviceMTL::Create()
 	try
 	{
 		// Init metal stuff
-		m_draw_sync_fence = MRCTransfer([m_dev.dev newFence]);
-
 		m_fn_constants = MRCTransfer([MTLFunctionConstantValues new]);
-		u8 upscale = std::max(1, theApp.GetConfigI("upscale_multiplier"));
-		vector_uchar2 upscale2 = vector2(upscale, upscale);
-		[m_fn_constants setConstantValue:&upscale2 type:MTLDataTypeUChar2 atIndex:GSMTLConstantIndex_SCALING_FACTOR];
+		vector_float2 upscale2 = vector2(GSConfig.UpscaleMultiplier, GSConfig.UpscaleMultiplier);
+		[m_fn_constants setConstantValue:&upscale2 type:MTLDataTypeFloat2 atIndex:GSMTLConstantIndex_SCALING_FACTOR];
 		setFnConstantB(m_fn_constants, m_dev.features.framebuffer_fetch, GSMTLConstantIndex_FRAMEBUFFER_FETCH);
+
+		m_draw_sync_fence = MRCTransfer([m_dev.dev newFence]);
+		[m_draw_sync_fence setLabel:@"Draw Sync Fence"];
+		m_spin_fence = MRCTransfer([m_dev.dev newFence]);
+		[m_spin_fence setLabel:@"Spin Fence"];
+		constexpr MTLResourceOptions spin_opts = MTLResourceStorageModePrivate | MTLResourceHazardTrackingModeUntracked;
+		m_spin_buffer = MRCTransfer([m_dev.dev newBufferWithLength:4 options:spin_opts]);
+		[m_spin_buffer setLabel:@"Spin Buffer"];
+		id<MTLCommandBuffer> initCommands = [m_queue commandBuffer];
+		id<MTLBlitCommandEncoder> clearSpinBuffer = [initCommands blitCommandEncoder];
+		[clearSpinBuffer fillBuffer:m_spin_buffer range:NSMakeRange(0, 4) value:0];
+		[clearSpinBuffer updateFence:m_spin_fence];
+		[clearSpinBuffer endEncoding];
+		NSError* err = nullptr;
+		m_spin_pipeline = MRCTransfer([m_dev.dev newComputePipelineStateWithFunction:LoadShader(@"waste_time") error:&err]);
+		if (err)
+		{
+			Console.Error("Failed to create spin pipeline: %s", [[err localizedDescription] UTF8String]);
+			return false;
+		}
 
 		m_hw_vertex = MRCTransfer([MTLVertexDescriptor new]);
 		[[[m_hw_vertex layouts] objectAtIndexedSubscript:GSMTLBufferIndexHWVertices] setStride:sizeof(GSVertex)];
@@ -772,7 +879,7 @@ bool GSDeviceMTL::Create()
 		m_hdr_resolve_pipeline = MakePipeline(pdesc, fs_triangle, LoadShader(@"ps_hdr_resolve"), @"HDR Resolve");
 		m_fxaa_pipeline = MakePipeline(pdesc, fs_triangle, LoadShader(@"ps_fxaa"), @"fxaa");
 		m_shadeboost_pipeline = MakePipeline(pdesc, fs_triangle, LoadShader(@"ps_shadeboost"), @"shadeboost");
-		pdesc.colorAttachments[0].pixelFormat = ConvertPixelFormat(GSTexture::Format::FloatColor);
+		pdesc.colorAttachments[0].pixelFormat = ConvertPixelFormat(GSTexture::Format::HDRColor);
 		m_hdr_init_pipeline = MakePipeline(pdesc, fs_triangle, LoadShader(@"ps_hdr_init"), @"HDR Init");
 		pdesc.colorAttachments[0].pixelFormat = MTLPixelFormatInvalid;
 		pdesc.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
@@ -853,7 +960,7 @@ bool GSDeviceMTL::Create()
 		}
 		pdesc.colorAttachments[0].pixelFormat = ConvertPixelFormat(GSTexture::Format::Color);
 		m_convert_pipeline_copy[0] = MakePipeline(pdesc, vs_convert, ps_copy, @"copy_color");
-		pdesc.colorAttachments[0].pixelFormat = ConvertPixelFormat(GSTexture::Format::FloatColor);
+		pdesc.colorAttachments[0].pixelFormat = ConvertPixelFormat(GSTexture::Format::HDRColor);
 		m_convert_pipeline_copy[1] = MakePipeline(pdesc, vs_convert, ps_copy, @"copy_hdr");
 
 		pdesc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
@@ -892,6 +999,8 @@ bool GSDeviceMTL::Create()
 		m_imgui_pipeline = MakePipeline(pdesc, LoadShader(@"vs_imgui"), LoadShader(@"ps_imgui"), @"imgui");
 		if (!m_dev.features.texture_swizzle)
 			m_imgui_pipeline_a8 = MakePipeline(pdesc, LoadShader(@"vs_imgui"), LoadShader(@"ps_imgui_a8"), @"imgui_a8");
+
+		[initCommands commit];
 	}
 	catch (GSRecoverableError&)
 	{
@@ -947,11 +1056,29 @@ bool GSDeviceMTL::DownloadTexture(GSTexture* src, const GSVector4i& rect, GSText
 	       destinationOffset:0
 	  destinationBytesPerRow:out_map.pitch
 	destinationBytesPerImage:size];
+	if (m_spin_timer)
+		[encoder updateFence:m_spin_fence];
 	[encoder endEncoding];
 	[cmdbuf popDebugGroup];
 
 	FlushEncoders();
-	[cmdbuf waitUntilCompleted];
+	if (@available(macOS 10.15, iOS 10.3, *))
+	{
+		if (GSConfig.HWSpinGPUForReadbacks)
+		{
+			m_spin_manager.ReadbackRequested();
+			m_spin_timer = 30;
+		}
+	}
+	if (GSConfig.HWSpinCPUForReadbacks)
+	{
+		while (!IsCommandBufferCompleted([cmdbuf status]))
+			ShortSpin();
+	}
+	else
+	{
+		[cmdbuf waitUntilCompleted];
+	}
 
 	out_map.bits = static_cast<u8*>([m_texture_download_buf contents]);
 	g_perfmon.Put(GSPerfMon::Readbacks, 1);
@@ -1556,7 +1683,7 @@ void GSDeviceMTL::RenderHW(GSHWDrawConfig& config)
 	if (config.ps.hdr)
 	{
 		GSVector2i size = config.rt->GetSize();
-		hdr_rt = CreateRenderTarget(size.x, size.y, GSTexture::Format::FloatColor);
+		hdr_rt = CreateRenderTarget(size.x, size.y, GSTexture::Format::HDRColor);
 		BeginRenderPass(@"HDR Init", hdr_rt, MTLLoadActionDontCare, nullptr, MTLLoadActionDontCare);
 		RenderCopy(config.rt, m_hdr_init_pipeline, config.drawarea);
 		rt = hdr_rt;

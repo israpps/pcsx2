@@ -43,7 +43,7 @@
 #define PS_TALES_OF_ABYSS_HLE 0
 #define PS_URBAN_CHAOS_HLE 0
 #define PS_INVALID_TEX0 0
-#define PS_SCALE_FACTOR 1
+#define PS_SCALE_FACTOR 1.0
 #define PS_HDR 0
 #define PS_COLCLIP 0
 #define PS_BLEND_A 0
@@ -674,7 +674,7 @@ float4 ps_color(PS_INPUT input)
 #if PS_FST == 0 && PS_INVALID_TEX0 == 1
 	// Re-normalize coordinate from invalid GS to corrected texture size
 	float2 st = (input.t.xy * WH.xy) / (input.t.w * WH.zw);
-	// no st_int yet
+	float2 st_int = (input.ti.zw * WH.xy) / (input.t.w * WH.zw);
 #elif PS_FST == 0
 	float2 st = input.t.xy / input.t.w;
 	float2 st_int = input.ti.zw / input.t.w;
@@ -715,7 +715,7 @@ void ps_fbmask(inout float4 C, float2 pos_xy)
 	if (PS_FBMASK)
 	{
 		float4 RT = trunc(RtTexture.Load(int3(pos_xy, 0)) * 255.0f + 0.1f);
-		C = (float4)(((uint4)(int4)C & (FbMask ^ 0xFF)) | ((uint4)RT & FbMask));
+		C = (float4)(((uint4)C & ~FbMask) | ((uint4)RT & FbMask));
 	}
 }
 
@@ -736,18 +736,9 @@ void ps_dither(inout float3 C, float2 pos_xy)
 
 void ps_color_clamp_wrap(inout float3 C)
 {
-	if (PS_HDR && PS_COLCLIP) // COLCLIP flag indicates accumulation blend under HDR
-	{
-		int3 color = int3(C);
-		if (PS_DFMT == FMT_16)
-			color &= (int3)0xF8;
-		// -128 to 127 gives us longer before we run out of float precision
-		// Especially for games that mainly use 1 and 255 (sly), since that maps to 1 and -1
-		C = float3((color << 24) >> 24);
-	}
 	// When dithering the bottom 3 bits become meaningless and cause lines in the picture
 	// so we need to limit the color depth on dithered items
-	else if (SW_BLEND || PS_DITHER || PS_FBMASK)
+	if (SW_BLEND || PS_DITHER || PS_FBMASK)
 	{
 		// Standard Clamp
 		if (PS_COLCLIP == 0 && PS_HDR == 0)
@@ -756,7 +747,7 @@ void ps_color_clamp_wrap(inout float3 C)
 		// In 16 bits format, only 5 bits of color are used. It impacts shadows computation of Castlevania
 		if (PS_DFMT == FMT_16 && PS_BLEND_MIX == 0)
 			C = (float3)((int3)C & (int3)0xF8);
-		else if (PS_COLCLIP == 1 && PS_HDR == 0)
+		else if (PS_COLCLIP == 1 || PS_HDR == 1)
 			C = (float3)((int3)C & (int3)0xFF);
 	}
 }
@@ -787,8 +778,9 @@ void ps_blend(inout float4 Color, inout float As, float2 pos_xy)
 
 		// As/Af clamp alpha for Blend mix
 		// We shouldn't clamp blend mix with clr1 as we want alpha higher
+		float C_clamped = C;
 		if (PS_BLEND_MIX > 0 && PS_CLR_HW != 1)
-			C = min(C, 1.0f);
+			C_clamped = min(C_clamped, 1.0f);
 
 		if (PS_BLEND_A == PS_BLEND_B)
 			Color.rgb = D;
@@ -800,9 +792,9 @@ void ps_blend(inout float4 Color, inout float As, float2 pos_xy)
 		// Based on the scripts at the above link, the ideal choice for Intel GPUs is 126/256, AMD 120/256.  Nvidia is a lost cause.
 		// 124/256 seems like a reasonable compromise, providing the correct answer 99.3% of the time on Intel (vs 99.6% for 126/256), and 97% of the time on AMD (vs 97.4% for 120/256).
 		else if (PS_BLEND_MIX == 2)
-				Color.rgb = ((A - B) * C + D) + (124.0f/256.0f);
+			Color.rgb = ((A - B) * C_clamped + D) + (124.0f / 256.0f);
 		else if (PS_BLEND_MIX == 1)
-				Color.rgb = ((A - B) * C + D) - (124.0f/256.0f);
+			Color.rgb = ((A - B) * C_clamped + D) - (124.0f / 256.0f);
 		else
 			Color.rgb = trunc(((A - B) * C) + D);
 
@@ -819,6 +811,16 @@ void ps_blend(inout float4 Color, inout float As, float2 pos_xy)
 			float min_color = min(min(Color.r, Color.g), Color.b);
 			float alpha_compensate = max(1.0f, min_color / 255.0f);
 			As -= alpha_compensate;
+		}
+		else if (PS_CLR_HW == 2)
+		{
+			// Compensate slightly for Cd*(As + 1) - Cs*As.
+			// The initial factor we chose is 1 (0.00392)
+			// as that is the minimum color Cd can be,
+			// then we multiply by alpha to get the minimum
+			// blended value it can be.
+			float color_compensate = 1.0f * (C + 1.0f);
+			Color.rgb -= (float3)color_compensate;
 		}
 	}
 	else
@@ -952,7 +954,7 @@ PS_OUTPUT ps_main(PS_INPUT input)
 	ps_fbmask(C, input.p.xy);
 
 #if !PS_NO_COLOR
-	output.c0 = PS_HDR ? float4(C.rgb, C.a / 255.0f) : C / 255.0f;
+	output.c0 = PS_HDR ? float4(C.rgb / 65535.0f, C.a / 255.0f) : C / 255.0f;
 #if !PS_NO_COLOR1
 	output.c1 = (float4)(alpha_blend);
 #endif

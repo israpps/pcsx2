@@ -22,6 +22,7 @@
 #include "GS/GSUtil.h"
 #include "Host.h"
 #include "HostDisplay.h"
+#include "ShaderCacheVersion.h"
 #include "common/StringUtil.h"
 #include <fstream>
 #include <sstream>
@@ -79,26 +80,26 @@ bool GSDevice11::Create()
 
 	D3D_FEATURE_LEVEL level;
 
-	if (g_host_display->GetRenderAPI() != HostDisplay::RenderAPI::D3D11)
+	if (g_host_display->GetRenderAPI() != RenderAPI::D3D11)
 	{
-		fprintf(stderr, "Render API is incompatible with D3D11\n");
+		Console.Error("Render API is incompatible with D3D11");
 		return false;
 	}
 
-	m_dev = static_cast<ID3D11Device*>(g_host_display->GetRenderDevice());
-	m_ctx = static_cast<ID3D11DeviceContext*>(g_host_display->GetRenderContext());
+	m_dev = static_cast<ID3D11Device*>(g_host_display->GetDevice());
+	m_ctx = static_cast<ID3D11DeviceContext*>(g_host_display->GetContext());
 	level = m_dev->GetFeatureLevel();
 
 	if (!GSConfig.DisableShaderCache)
 	{
-		if (!m_shader_cache.Open(EmuFolders::Cache, m_dev->GetFeatureLevel(), SHADER_VERSION, GSConfig.UseDebugDevice))
+		if (!m_shader_cache.Open(EmuFolders::Cache, m_dev->GetFeatureLevel(), SHADER_CACHE_VERSION, GSConfig.UseDebugDevice))
 		{
 			Console.Warning("Shader cache failed to open.");
 		}
 	}
 	else
 	{
-		m_shader_cache.Open({}, m_dev->GetFeatureLevel(), SHADER_VERSION, GSConfig.UseDebugDevice);
+		m_shader_cache.Open({}, m_dev->GetFeatureLevel(), SHADER_CACHE_VERSION, GSConfig.UseDebugDevice);
 		Console.WriteLn("Not using shader cache.");
 	}
 
@@ -142,7 +143,7 @@ bool GSDevice11::Create()
 	}
 
 	ShaderMacro sm_convert(m_shader_cache.GetFeatureLevel());
-	sm_convert.AddMacro("PS_SCALE_FACTOR", GSConfig.UpscaleMultiplier);
+	sm_convert.AddMacro("PS_SCALE_FACTOR", StringUtil::ToChars(GSConfig.UpscaleMultiplier));
 
 	D3D_SHADER_MACRO* sm_convert_ptr = sm_convert.GetPtr();
 
@@ -465,7 +466,7 @@ GSTexture* GSDevice11::CreateSurface(GSTexture::Type type, int width, int height
 	switch (format)
 	{
 		case GSTexture::Format::Color:        dxformat = DXGI_FORMAT_R8G8B8A8_UNORM;     break;
-		case GSTexture::Format::FloatColor:   dxformat = DXGI_FORMAT_R32G32B32A32_FLOAT; break;
+		case GSTexture::Format::HDRColor:     dxformat = DXGI_FORMAT_R16G16B16A16_UNORM; break;
 		case GSTexture::Format::DepthStencil: dxformat = DXGI_FORMAT_R32G8X24_TYPELESS;  break;
 		case GSTexture::Format::UNorm8:       dxformat = DXGI_FORMAT_A8_UNORM;           break;
 		case GSTexture::Format::UInt16:       dxformat = DXGI_FORMAT_R16_UINT;           break;
@@ -822,16 +823,16 @@ void GSDevice11::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 	}
 }
 
-void GSDevice11::DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset)
+void GSDevice11::DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset, int bufIdx)
 {
-	const GSVector4 s = GSVector4(dTex->GetSize());
+	const GSVector4 ds = GSVector4(dTex->GetSize());
 
 	const GSVector4 sRect(0, 0, 1, 1);
-	const GSVector4 dRect(0.0f, yoffset, s.x, s.y + yoffset);
+	const GSVector4 dRect(0.0f, yoffset, ds.x, ds.y + yoffset);
 
 	InterlaceConstantBuffer cb;
 
-	cb.ZrH = GSVector2(0, 1.0f / s.y);
+	cb.ZrH = GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY);
 
 	m_ctx->UpdateSubresource(m_interlace.cb.get(), 0, nullptr, &cb, 0, 0);
 
@@ -1311,7 +1312,12 @@ GSDevice11::ShaderMacro::ShaderMacro(D3D_FEATURE_LEVEL fl)
 
 void GSDevice11::ShaderMacro::AddMacro(const char* n, int d)
 {
-	mlist.emplace_back(n, std::to_string(d));
+	AddMacro(n, std::to_string(d));
+}
+
+void GSDevice11::ShaderMacro::AddMacro(const char* n, std::string d)
+{
+	mlist.emplace_back(n, std::move(d));
 }
 
 D3D_SHADER_MACRO* GSDevice11::ShaderMacro::GetPtr(void)
@@ -1382,7 +1388,7 @@ void GSDevice11::RenderHW(GSHWDrawConfig& config)
 	{
 		const GSVector4 dRect(config.drawarea);
 		const GSVector4 sRect = dRect / GSVector4(rtsize.x, rtsize.y).xyxy();
-		hdr_rt = CreateRenderTarget(rtsize.x, rtsize.y, GSTexture::Format::FloatColor);
+		hdr_rt = CreateRenderTarget(rtsize.x, rtsize.y, GSTexture::Format::HDRColor);
 		// Warning: StretchRect must be called before BeginScene otherwise
 		// vertices will be overwritten. Trust me you don't want to do that.
 		StretchRect(config.rt, sRect, hdr_rt, dRect, ShaderConvert::HDR_INIT, false);

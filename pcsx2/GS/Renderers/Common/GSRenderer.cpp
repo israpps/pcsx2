@@ -179,13 +179,13 @@ bool GSRenderer::Merge(int field)
 	float offset = is_bob ? (tex[1] ? tex[1]->GetScale().y : tex[0]->GetScale().y) : 0.0f;
 
 	int field2 = 0;
-	int mode = 2;
+	int mode = 3;
 
 	// FFMD (half frames) requires blend deinterlacing, so automatically use that. Same when SCANMSK is used but not blended in the merge circuit (Alpine Racer 3)
 	if (GSConfig.InterlaceMode != GSInterlaceMode::Automatic || (!m_regs->SMODE2.FFMD && !scanmask_frame))
 	{
-		field2 = ((static_cast<int>(GSConfig.InterlaceMode) - 1) & 1);
-		mode = ((static_cast<int>(GSConfig.InterlaceMode) - 1) >> 1);
+		field2 = ((static_cast<int>(GSConfig.InterlaceMode) - 2) & 1);
+		mode = ((static_cast<int>(GSConfig.InterlaceMode) - 2) >> 1);
 	}
 
 	for (int i = 0; i < 2; i++)
@@ -326,7 +326,7 @@ bool GSRenderer::Merge(int field)
 		if (m_regs->SMODE2.FFMD && !is_bob && !GSConfig.DisableInterlaceOffset && GSConfig.InterlaceMode != GSInterlaceMode::Off)
 		{
 			// We do half because FFMD is a half sized framebuffer, then we offset by 1 in the shader for the actual interlace
-			if(GetUpscaleMultiplier() > 1)
+			if(GetUpscaleMultiplier() > 1.0f)
 				interlace_offset += ((((tex[1] ? tex[1]->GetScale().y : tex[0]->GetScale().y) + 0.5f) * 0.5f) - 1.0f) * static_cast<float>(field ^ field2);
 			offset = 1.0f;
 		}
@@ -363,14 +363,17 @@ bool GSRenderer::Merge(int field)
 		resolution.y = std::min(max_resolution.y, resolution.y);
 	}
 
-	fs = resolution * GSVector2i(GetUpscaleMultiplier());
+	fs = GSVector2i(static_cast<int>(static_cast<float>(resolution.x) * GetUpscaleMultiplier()),
+		static_cast<int>(static_cast<float>(resolution.y) * GetUpscaleMultiplier()));
 	ds = fs;
 
 	// When interlace(FRAME) mode, the rect is half height, so it needs to be stretched.
-	if (m_regs->SMODE2.INT && m_regs->SMODE2.FFMD)
+	const bool is_interlaced_resolution = m_regs->SMODE2.INT || (isReallyInterlaced() && IsAnalogue() && GSConfig.InterlaceMode != GSInterlaceMode::Off);
+
+	if (is_interlaced_resolution && m_regs->SMODE2.FFMD)
 		ds.y *= 2;
 
-	m_real_size = ds;
+	m_real_size = GSVector2i(fs.x, is_interlaced_resolution ? ds.y : fs.y);
 
 	if (tex[0] || tex[1])
 	{
@@ -545,19 +548,19 @@ static GSVector4i CalculateDrawSrcRect(const GSTexture* src)
 #ifndef PCSX2_CORE
 	return GSVector4i(0, 0, src->GetWidth(), src->GetHeight());
 #else
-	const int upscale = GSConfig.UpscaleMultiplier;
+	const float upscale = GSConfig.UpscaleMultiplier;
 	const GSVector2i size(src->GetSize());
-	const int left = GSConfig.Crop[0] * upscale;
-	const int top = GSConfig.Crop[1] * upscale;
-	const int right = size.x - (GSConfig.Crop[2] * upscale);
-	const int bottom = size.y - (GSConfig.Crop[3] * upscale);
+	const int left = static_cast<int>(static_cast<float>(GSConfig.Crop[0]) * upscale);
+	const int top = static_cast<int>(static_cast<float>(GSConfig.Crop[1]) * upscale);
+	const int right =  size.x - static_cast<int>(static_cast<float>(GSConfig.Crop[2]) * upscale);
+	const int bottom = size.y - static_cast<int>(static_cast<float>(GSConfig.Crop[3]) * upscale);
 	return GSVector4i(left, top, right, bottom);
 #endif
 }
 
 void GSRenderer::VSync(u32 field, bool registers_written)
 {
-	Flush();
+	Flush(GSFlushReason::VSYNC);
 
 	if (s_dump && s_n >= s_saven)
 	{
@@ -916,7 +919,7 @@ void GSRenderer::KeyEvent(const HostKeyEvent& e)
 		{
 			case VK_F5:
 				GSConfig.InterlaceMode = static_cast<GSInterlaceMode>((static_cast<int>(GSConfig.InterlaceMode) + static_cast<int>(GSInterlaceMode::Count) + step) % static_cast<int>(GSInterlaceMode::Count));
-				theApp.SetConfig("deinterlace", static_cast<int>(GSConfig.InterlaceMode));
+				theApp.SetConfig("deinterlace_mode", static_cast<int>(GSConfig.InterlaceMode));
 				printf("GS: Set deinterlace mode to %d (%s).\n", static_cast<int>(GSConfig.InterlaceMode), theApp.m_gs_deinterlace.at(static_cast<int>(GSConfig.InterlaceMode)).name.c_str());
 				return;
 			case VK_NEXT: // As requested by Prafull, to be removed later

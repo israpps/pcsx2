@@ -34,6 +34,7 @@
 #include "Config.h"
 #include "Counters.h"
 #include "Frontend/ImGuiManager.h"
+#include "Frontend/ImGuiOverlays.h"
 #include "GS.h"
 #include "GS/GS.h"
 #include "Host.h"
@@ -43,7 +44,6 @@
 
 #ifdef PCSX2_CORE
 #include "Frontend/FullscreenUI.h"
-#include "Frontend/ImGuiManager.h"
 #include "Frontend/ImGuiFullscreen.h"
 #include "Frontend/InputManager.h"
 #include "VMManager.h"
@@ -61,8 +61,6 @@ namespace ImGuiManager
 	static bool AddIconFonts(float size);
 	static void AcquirePendingOSDMessages();
 	static void DrawOSDMessages();
-	static void FormatProcessorStat(std::string& text, double usage, double time);
-	static void DrawPerformanceOverlay();
 } // namespace ImGuiManager
 
 static float s_global_scale = 1.0f;
@@ -418,7 +416,7 @@ ImFont* ImGuiManager::AddFixedFont(float size)
 
 bool ImGuiManager::AddIconFonts(float size)
 {
-	static constexpr ImWchar range_fa[] = { 0xf001,0xf002,0xf005,0xf005,0xf007,0xf007,0xf00c,0xf00e,0xf011,0xf011,0xf013,0xf013,0xf017,0xf017,0xf019,0xf019,0xf021,0xf021,0xf023,0xf023,0xf025,0xf025,0xf028,0xf028,0xf02d,0xf02e,0xf030,0xf030,0xf03a,0xf03a,0xf03d,0xf03d,0xf04a,0xf04c,0xf04e,0xf04e,0xf050,0xf050,0xf052,0xf052,0xf059,0xf059,0xf05e,0xf05e,0xf065,0xf065,0xf067,0xf067,0xf06a,0xf06a,0xf071,0xf071,0xf077,0xf078,0xf07b,0xf07c,0xf084,0xf085,0xf091,0xf091,0xf0a0,0xf0a0,0xf0ac,0xf0ad,0xf0b0,0xf0b0,0xf0c5,0xf0c5,0xf0c7,0xf0c9,0xf0cb,0xf0cb,0xf0d0,0xf0d0,0xf0e2,0xf0e2,0xf0eb,0xf0eb,0xf0f1,0xf0f1,0xf0f3,0xf0f3,0xf0fe,0xf0fe,0xf110,0xf110,0xf119,0xf119,0xf11b,0xf11c,0xf121,0xf121,0xf133,0xf133,0xf140,0xf140,0xf144,0xf144,0xf14a,0xf14a,0xf15b,0xf15b,0xf188,0xf188,0xf191,0xf192,0xf1c9,0xf1c9,0xf1dd,0xf1de,0xf1e6,0xf1e6,0xf1ea,0xf1eb,0xf1f8,0xf1f8,0xf1fc,0xf1fc,0xf242,0xf242,0xf245,0xf245,0xf26c,0xf26c,0xf279,0xf279,0xf2d0,0xf2d0,0xf2db,0xf2db,0xf2f2,0xf2f2,0xf2f5,0xf2f5,0xf302,0xf302,0xf3c1,0xf3c1,0xf3fd,0xf3fd,0xf410,0xf410,0xf466,0xf466,0xf479,0xf479,0xf500,0xf500,0xf517,0xf517,0xf51f,0xf51f,0xf543,0xf543,0xf545,0xf545,0xf547,0xf548,0xf552,0xf552,0xf5a2,0xf5a2,0xf65d,0xf65e,0xf6a9,0xf6a9,0xf756,0xf756,0xf7c2,0xf7c2,0xf807,0xf807,0xf815,0xf815,0xf818,0xf818,0xf84c,0xf84c,0xf8cc,0xf8cc,0x0,0x0 };
+	static constexpr ImWchar range_fa[] = { 0xf001,0xf002,0xf005,0xf005,0xf007,0xf007,0xf00c,0xf00e,0xf011,0xf011,0xf013,0xf013,0xf017,0xf017,0xf019,0xf019,0xf021,0xf021,0xf023,0xf023,0xf025,0xf025,0xf028,0xf028,0xf02d,0xf02e,0xf030,0xf030,0xf03a,0xf03a,0xf03d,0xf03d,0xf04a,0xf04c,0xf04e,0xf04e,0xf050,0xf050,0xf052,0xf052,0xf059,0xf059,0xf05e,0xf05e,0xf065,0xf065,0xf067,0xf067,0xf06a,0xf06a,0xf071,0xf071,0xf077,0xf078,0xf07b,0xf07c,0xf084,0xf085,0xf091,0xf091,0xf0a0,0xf0a0,0xf0ac,0xf0ad,0xf0b0,0xf0b0,0xf0c5,0xf0c5,0xf0c7,0xf0c9,0xf0cb,0xf0cb,0xf0d0,0xf0d0,0xf0dc,0xf0dc,0xf0e2,0xf0e2,0xf0eb,0xf0eb,0xf0f1,0xf0f1,0xf0f3,0xf0f3,0xf0fe,0xf0fe,0xf110,0xf110,0xf119,0xf119,0xf11b,0xf11c,0xf121,0xf121,0xf133,0xf133,0xf140,0xf140,0xf144,0xf144,0xf14a,0xf14a,0xf15b,0xf15b,0xf15d,0xf15d,0xf188,0xf188,0xf191,0xf192,0xf1c9,0xf1c9,0xf1dd,0xf1de,0xf1e6,0xf1e6,0xf1ea,0xf1eb,0xf1f8,0xf1f8,0xf1fc,0xf1fc,0xf242,0xf242,0xf245,0xf245,0xf26c,0xf26c,0xf279,0xf279,0xf2d0,0xf2d0,0xf2db,0xf2db,0xf2f2,0xf2f2,0xf2f5,0xf2f5,0xf302,0xf302,0xf3c1,0xf3c1,0xf3fd,0xf3fd,0xf410,0xf410,0xf466,0xf466,0xf479,0xf479,0xf500,0xf500,0xf517,0xf517,0xf51f,0xf51f,0xf543,0xf543,0xf545,0xf545,0xf547,0xf548,0xf552,0xf552,0xf5a2,0xf5a2,0xf65d,0xf65e,0xf6a9,0xf6a9,0xf756,0xf756,0xf7c2,0xf7c2,0xf807,0xf807,0xf815,0xf815,0xf818,0xf818,0xf84c,0xf84c,0xf8cc,0xf8cc,0x0,0x0 };
 
 	ImFontConfig cfg;
 	cfg.MergeMode = true;
@@ -663,177 +661,6 @@ void ImGuiManager::DrawOSDMessages()
 	}
 }
 
-void ImGuiManager::FormatProcessorStat(std::string& text, double usage, double time)
-{
-	// Some values, such as GPU (and even CPU to some extent) can be out of phase with the wall clock,
-	// which the processor time is divided by to get a utilization percentage. Let's clamp it at 100%,
-	// so that people don't get confused, and remove the decimal places when it's there while we're at it.
-	if (usage >= 99.95)
-		fmt::format_to(std::back_inserter(text), "100% ({:.2f}ms)", time);
-	else
-		fmt::format_to(std::back_inserter(text), "{:.1f}% ({:.2f}ms)", usage, time);
-}
-
-void ImGuiManager::DrawPerformanceOverlay()
-{
-	const float scale = s_global_scale;
-	const float shadow_offset = std::ceil(1.0f * scale);
-	const float margin = std::ceil(10.0f * scale);
-	const float spacing = std::ceil(5.0f * scale);
-	float position_y = margin;
-
-	ImDrawList* dl = ImGui::GetBackgroundDrawList();
-	std::string text;
-	ImVec2 text_size;
-	bool first = true;
-
-	text.reserve(128);
-
-#define DRAW_LINE(font, text, color) \
-	do \
-	{ \
-		text_size = font->CalcTextSizeA(font->FontSize, std::numeric_limits<float>::max(), -1.0f, (text), nullptr, nullptr); \
-		dl->AddText(font, font->FontSize, \
-			ImVec2(ImGui::GetIO().DisplaySize.x - margin - text_size.x + shadow_offset, position_y + shadow_offset), \
-			IM_COL32(0, 0, 0, 100), (text)); \
-		dl->AddText(font, font->FontSize, ImVec2(ImGui::GetIO().DisplaySize.x - margin - text_size.x, position_y), color, (text)); \
-		position_y += text_size.y + spacing; \
-	} while (0)
-
-#ifdef PCSX2_CORE
-	const bool paused = (VMManager::GetState() == VMState::Paused);
-#else
-	constexpr bool paused = false;
-#endif
-
-	if (!paused)
-	{
-		const float speed = PerformanceMetrics::GetSpeed();
-		if (GSConfig.OsdShowFPS)
-		{
-			switch (PerformanceMetrics::GetInternalFPSMethod())
-			{
-				case PerformanceMetrics::InternalFPSMethod::GSPrivilegedRegister:
-					fmt::format_to(std::back_inserter(text), "G: {:.2f} [P] | V: {:.2f}", PerformanceMetrics::GetInternalFPS(),
-						PerformanceMetrics::GetFPS());
-					break;
-
-				case PerformanceMetrics::InternalFPSMethod::DISPFBBlit:
-					fmt::format_to(std::back_inserter(text), "G: {:.2f} [B] | V: {:.2f}", PerformanceMetrics::GetInternalFPS(),
-						PerformanceMetrics::GetFPS());
-					break;
-
-				case PerformanceMetrics::InternalFPSMethod::None:
-				default:
-					fmt::format_to(std::back_inserter(text), "V: {:.2f}", PerformanceMetrics::GetFPS());
-					break;
-			}
-			first = false;
-		}
-		if (GSConfig.OsdShowSpeed)
-		{
-			fmt::format_to(std::back_inserter(text), "{}{}%", first ? "" : " | ", static_cast<u32>(std::round(speed)));
-
-			// We read the main config here, since MTGS doesn't get updated with speed toggles.
-			if (EmuConfig.GS.LimitScalar == 0.0f)
-				text += " (Max)";
-			else
-				fmt::format_to(std::back_inserter(text), " ({:.0f}%)", EmuConfig.GS.LimitScalar * 100.0f);
-		}
-		if (!text.empty())
-		{
-			ImU32 color;
-			if (speed < 95.0f)
-				color = IM_COL32(255, 100, 100, 255);
-			else if (speed > 105.0f)
-				color = IM_COL32(100, 255, 100, 255);
-			else
-				color = IM_COL32(255, 255, 255, 255);
-
-			DRAW_LINE(s_fixed_font, text.c_str(), color);
-		}
-
-		if (GSConfig.OsdShowGSStats)
-		{
-			std::string gs_stats;
-			GSgetStats(gs_stats);
-			DRAW_LINE(s_fixed_font, gs_stats.c_str(), IM_COL32(255, 255, 255, 255));
-		}
-
-		if (GSConfig.OsdShowResolution)
-		{
-			int width, height;
-			GSgetInternalResolution(&width, &height);
-
-			text.clear();
-			fmt::format_to(std::back_inserter(text), "{}x{} {} {}", width, height, ReportVideoMode(), ReportInterlaceMode());
-			DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-		}
-
-		if (GSConfig.OsdShowCPU)
-		{
-			text.clear();
-			fmt::format_to(std::back_inserter(text), "{:.2f}ms ({:.2f}ms worst)", PerformanceMetrics::GetAverageFrameTime(),
-				PerformanceMetrics::GetWorstFrameTime());
-			DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-
-			text.clear();
-			if (EmuConfig.Speedhacks.EECycleRate != 0 || EmuConfig.Speedhacks.EECycleSkip != 0)
-				fmt::format_to(std::back_inserter(text), "EE[{}/{}]: ", EmuConfig.Speedhacks.EECycleRate, EmuConfig.Speedhacks.EECycleSkip);
-			else
-				text = "EE: ";
-			FormatProcessorStat(text, PerformanceMetrics::GetCPUThreadUsage(), PerformanceMetrics::GetCPUThreadAverageTime());
-			DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-
-			text = "GS: ";
-			FormatProcessorStat(text, PerformanceMetrics::GetGSThreadUsage(), PerformanceMetrics::GetGSThreadAverageTime());
-			DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-
-			const u32 gs_sw_threads = PerformanceMetrics::GetGSSWThreadCount();
-			for (u32 i = 0; i < gs_sw_threads; i++)
-			{
-				text.clear();
-				fmt::format_to(std::back_inserter(text), "SW-{}: ", i);
-				FormatProcessorStat(text, PerformanceMetrics::GetGSSWThreadUsage(i), PerformanceMetrics::GetGSSWThreadAverageTime(i));
-				DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-			}
-
-			if (THREAD_VU1)
-			{
-				text = "VU: ";
-				FormatProcessorStat(text, PerformanceMetrics::GetVUThreadUsage(), PerformanceMetrics::GetVUThreadAverageTime());
-				DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-			}
-		}
-
-		if (GSConfig.OsdShowGPU)
-		{
-			text = "GPU: ";
-			FormatProcessorStat(text, PerformanceMetrics::GetGPUUsage(), PerformanceMetrics::GetGPUAverageTime());
-			DRAW_LINE(s_fixed_font, text.c_str(), IM_COL32(255, 255, 255, 255));
-		}
-
-		if (GSConfig.OsdShowIndicators)
-		{
-			const bool is_normal_speed = (EmuConfig.GS.LimitScalar == EmuConfig.Framerate.NominalScalar);
-			if (!is_normal_speed)
-			{
-				const bool is_slowmo = (EmuConfig.GS.LimitScalar < EmuConfig.Framerate.NominalScalar);
-				DRAW_LINE(s_standard_font, is_slowmo ? ICON_FA_FORWARD : ICON_FA_FAST_FORWARD, IM_COL32(255, 255, 255, 255));
-			}
-		}
-	}
-	else
-	{
-		if (GSConfig.OsdShowIndicators)
-		{
-			DRAW_LINE(s_standard_font, ICON_FA_PAUSE, IM_COL32(255, 255, 255, 255));
-		}
-	}
-
-#undef DRAW_LINE
-}
-
 void ImGuiManager::RenderOSD()
 {
 	// acquire for IO.MousePos.
@@ -842,9 +669,9 @@ void ImGuiManager::RenderOSD()
 #ifdef PCSX2_CORE
 	// Don't draw OSD when we're just running big picture.
 	if (VMManager::HasValidVM())
-		DrawPerformanceOverlay();
+		RenderOverlays();
 #else
-	DrawPerformanceOverlay();
+	RenderOverlays();
 #endif
 
 	AcquirePendingOSDMessages();

@@ -58,9 +58,7 @@
       <PreprocessorDefinitions Condition="'$(CI)'=='true'">PCSX2_CI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="!$(Configuration.Contains(AVX2))">_M_SSE=0x401;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="$(Configuration.Contains(AVX2))">_M_SSE=0x501;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <!-- This flag will throw a warning on x64 as SSE2 is implied-->
-      <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
-      <EnableEnhancedInstructionSet Condition="'$(Platform)'!='x64'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet Condition="!$(Configuration.Contains(AVX2))">NotSet</EnableEnhancedInstructionSet>
       <EnableEnhancedInstructionSet Condition="$(Configuration.Contains(AVX2))">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <MinimalRebuild>false</MinimalRebuild>
       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
@@ -127,6 +125,9 @@
     <ProjectReference Include="..\3rdparty\lzma\lzma.vcxproj">
       <Project>{a4323327-3f2b-4271-83d9-7f9a3c66b6b2}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\3rdparty\zydis\zydis.vcxproj">
+      <Project>{67d0160c-0fe4-44b9-ac2e-82bbcf4104df}</Project>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="..\pcsx2\windows\PCSX2.manifest" />
@@ -135,6 +136,7 @@
     <ClCompile Include="EarlyHardwareCheck.cpp" />
     <ClCompile Include="QtProgressCallback.cpp" />
     <ClCompile Include="Settings\FolderSettingsWidget.cpp" />
+    <ClCompile Include="Settings\MemoryCardConvertWorker.cpp" />
     <ClCompile Include="Tools\InputRecording\NewInputRecordingDlg.cpp" />
     <ClCompile Include="Settings\BIOSSettingsWidget.cpp" />
     <ClCompile Include="Settings\ControllerBindingWidgets.cpp" />
@@ -153,6 +155,7 @@
     <ClCompile Include="Settings\InputBindingWidget.cpp" />
     <ClCompile Include="Settings\ControllerSettingsDialog.cpp" />
     <ClCompile Include="Settings\AudioSettingsWidget.cpp" />
+    <ClCompile Include="Settings\MemoryCardConvertDialog.cpp" />
     <ClCompile Include="Settings\MemoryCardSettingsWidget.cpp" />
     <ClCompile Include="Settings\DEV9DnsHostDialog.cpp" />
     <ClCompile Include="Settings\DEV9SettingsWidget.cpp" />
@@ -191,6 +194,7 @@
     <QtMoc Include="Settings\InputBindingWidget.h" />
     <QtMoc Include="Settings\ControllerSettingsDialog.h" />
     <QtMoc Include="Settings\AudioSettingsWidget.h" />
+    <QtMoc Include="Settings\MemoryCardConvertDialog.h" />
     <QtMoc Include="Settings\MemoryCardSettingsWidget.h" />
     <QtMoc Include="Settings\DEV9DnsHostDialog.h" />
     <QtMoc Include="Settings\DEV9SettingsWidget.h" />
@@ -210,6 +214,7 @@
     <ClInclude Include="QtUtils.h" />
     <QtMoc Include="Settings\ControllerBindingWidgets.h" />
     <QtMoc Include="Settings\ControllerGlobalSettingsWidget.h" />
+    <ClInclude Include="Settings\MemoryCardConvertWorker.h" />
     <ClInclude Include="SettingWidgetBinder.h" />
     <QtMoc Include="QtHost.h" />
     <ClInclude Include="PrecompiledHeader.h" />
@@ -242,6 +247,7 @@
     <ClCompile Include="$(IntDir)Settings\moc_InputBindingDialog.cpp" />
     <ClCompile Include="$(IntDir)Settings\moc_InputBindingWidget.cpp" />
     <ClCompile Include="$(IntDir)Settings\moc_AudioSettingsWidget.cpp" />
+    <ClCompile Include="$(IntDir)Settings\moc_MemoryCardConvertDialog.cpp" />
     <ClCompile Include="$(IntDir)Settings\moc_MemoryCardSettingsWidget.cpp" />
     <ClCompile Include="$(IntDir)Settings\moc_FolderSettingsWidget.cpp" />
     <ClCompile Include="$(IntDir)Settings\moc_DEV9DnsHostDialog.cpp" />
@@ -321,6 +327,9 @@
       <FileType>Document</FileType>
     </QtUi>
     <QtUi Include="Settings\AudioSettingsWidget.ui">
+      <FileType>Document</FileType>
+    </QtUi>
+    <QtUi Include="Settings\MemoryCardConvertDialog.ui">
       <FileType>Document</FileType>
     </QtUi>
     <QtUi Include="Settings\MemoryCardSettingsWidget.ui">

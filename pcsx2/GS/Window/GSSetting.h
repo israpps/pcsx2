@@ -87,6 +87,8 @@ enum
 	IDC_SWTHREADS_EDIT,
 	// OpenGL Advanced Settings
 	IDC_GEOMETRY_SHADER_OVERRIDE,
+	IDC_SPIN_GPU,
+	IDC_SPIN_CPU,
 	// On-screen Display
 	IDC_OSD_LOG,
 	IDC_OSD_MONITOR,

@@ -284,6 +284,8 @@ RendererTab::RendererTab(wxWindow* parent)
 	auto* hw_checks_box = new wxWrapSizer(wxHORIZONTAL);
 
 	auto* paltex_prereq = m_ui.addCheckBox(hw_checks_box, "GPU Palette Conversion", "paltex", IDC_PALTEX, hw_prereq);
+	m_ui.addCheckBox(hw_checks_box, "Spin GPU During Readbacks", "HWSpinGPUForReadbacks", IDC_SPIN_GPU);
+	m_ui.addCheckBox(hw_checks_box, "Spin CPU During Readbacks", "HWSpinCPUForReadbacks", IDC_SPIN_CPU);
 	auto aniso_prereq = [this, paltex_prereq]{ return m_is_hardware && paltex_prereq->GetValue() == false; };
 
 	auto* hw_choice_grid = new wxFlexGridSizer(2, space, space);
@@ -473,10 +475,9 @@ PostTab::PostTab(wxWindow* parent)
 	auto* shader_boost_grid = new wxFlexGridSizer(2, space, space);
 	shader_boost_grid->AddGrowableCol(1);
 
-	auto shader_boost_prereq = [shade_boost_check, this] { return shade_boost_check.box->GetValue(); };
-	m_ui.addSliderAndLabel(shader_boost_grid, "Brightness:", "ShadeBoost_Brightness", 0, 100, 50, -1, shader_boost_prereq);
-	m_ui.addSliderAndLabel(shader_boost_grid, "Contrast:",   "ShadeBoost_Contrast",   0, 100, 50, -1, shader_boost_prereq);
-	m_ui.addSliderAndLabel(shader_boost_grid, "Saturation:", "ShadeBoost_Saturation", 0, 100, 50, -1, shader_boost_prereq);
+	m_ui.addSliderAndLabel(shader_boost_grid, "Brightness:", "ShadeBoost_Brightness", 0, 100, 50, -1, shade_boost_check);
+	m_ui.addSliderAndLabel(shader_boost_grid, "Contrast:",   "ShadeBoost_Contrast",   0, 100, 50, -1, shade_boost_check);
+	m_ui.addSliderAndLabel(shader_boost_grid, "Saturation:", "ShadeBoost_Saturation", 0, 100, 50, -1, shade_boost_check);
 
 	shade_boost_box->Add(shader_boost_grid, wxSizerFlags().Expand());
 	shader_box->Add(shade_boost_box.outer, wxSizerFlags().Expand());
@@ -532,6 +533,8 @@ OSDTab::OSDTab(wxWindow* parent)
 	m_ui.addCheckBox(log_grid, "Show Resolution", "OsdShowResolution", -1);
 	m_ui.addCheckBox(log_grid, "Show Statistics", "OsdShowGSStats",    -1);
 	m_ui.addCheckBox(log_grid, "Show Indicators", "OsdShowIndicators", -1);
+	m_ui.addCheckBox(log_grid, "Show Settings",   "OsdShowSettings",   -1);
+	m_ui.addCheckBox(log_grid, "Show Inputs",     "OsdShowInputs",     -1);
 
 	log_box->Add(log_grid, wxSizerFlags().Expand());
 	tab_box->Add(log_box.outer, wxSizerFlags().Expand());
@@ -554,13 +557,10 @@ DebugTab::DebugTab(wxWindow* parent)
 		auto* debug_check_box = new wxFlexGridSizer(2, space, space);
 		m_ui.addCheckBox(debug_check_box, "Disable Dual-Source Blending", "DisableDualSourceBlend");
 		m_ui.addCheckBox(debug_check_box, "Disable Framebuffer Fetch",    "DisableFramebufferFetch");
-		m_ui.addCheckBox(debug_check_box, "Disable Hardware Readbacks",   "HWDisableReadbacks");
 		m_ui.addCheckBox(debug_check_box, "Disable Shader Cache",         "disable_shader_cache");
 		m_ui.addCheckBox(debug_check_box, "Use Blit Swap Chain",          "UseBlitSwapChain");
+		m_ui.addCheckBox(debug_check_box, "Dump GS data",                 "dump");
 		m_ui.addCheckBox(debug_check_box, "Use Debug Device",             "UseDebugDevice");
-
-		auto* debug_save_check_box_main = new wxFlexGridSizer(1, space, space);
-		m_ui.addCheckBox(debug_save_check_box_main, "Dump GS data", "dump");
 
 		auto* debug_save_check_box = new wxWrapSizer(wxHORIZONTAL);
 		m_ui.addCheckBox(debug_save_check_box, "Save RT",      "save");
@@ -569,8 +569,6 @@ DebugTab::DebugTab(wxWindow* parent)
 		m_ui.addCheckBox(debug_save_check_box, "Save Depth",   "savez");
 
 		debug_box->Add(debug_check_box);
-		debug_box->AddSpacer(space);
-		debug_box->Add(debug_save_check_box_main);
 		debug_box->AddSpacer(space);
 		debug_box->Add(debug_save_check_box);
 
@@ -587,9 +585,10 @@ DebugTab::DebugTab(wxWindow* parent)
 
 	PaddedBoxSizer<wxStaticBoxSizer> ogl_box(wxVERTICAL, this, "Overrides");
 	auto* ogl_grid = new wxFlexGridSizer(2, space, space);
-	m_ui.addComboBoxAndLabel(ogl_grid, "Texture Barriers:", "OverrideTextureBarriers", &theApp.m_gs_generic_list, -1,                           vk_ogl_hw_prereq);
-	m_ui.addComboBoxAndLabel(ogl_grid, "Geometry Shader:",  "OverrideGeometryShaders", &theApp.m_gs_generic_list, IDC_GEOMETRY_SHADER_OVERRIDE, vk_ogl_hw_prereq);
-	m_ui.addComboBoxAndLabel(ogl_grid, "Dump Compression:", "GSDumpCompression",       &theApp.m_gs_dump_compression, -1);
+	m_ui.addComboBoxAndLabel(ogl_grid, "Texture Barriers:",       "OverrideTextureBarriers", &theApp.m_gs_generic_list, -1,                           vk_ogl_hw_prereq);
+	m_ui.addComboBoxAndLabel(ogl_grid, "Geometry Shader:",        "OverrideGeometryShaders", &theApp.m_gs_generic_list, IDC_GEOMETRY_SHADER_OVERRIDE, vk_ogl_hw_prereq);
+	m_ui.addComboBoxAndLabel(ogl_grid, "Hardware Download Mode:", "HWDownloadMode",          &theApp.m_gs_hw_download_mode, -1);
+	m_ui.addComboBoxAndLabel(ogl_grid, "Dump Compression:",       "GSDumpCompression",       &theApp.m_gs_dump_compression, -1);
 	ogl_box->Add(ogl_grid);
 
 	tab_box->Add(ogl_box.outer, wxSizerFlags().Expand());
@@ -632,7 +631,7 @@ Dialog::Dialog()
 	m_adapter_select = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, {});
 	top_grid->Add(m_adapter_select, wxSizerFlags().Expand());
 
-	m_ui.addComboBoxAndLabel(top_grid, "Deinterlacing (F5):", "deinterlace", &theApp.m_gs_deinterlace);
+	m_ui.addComboBoxAndLabel(top_grid, "Deinterlacing (F5):", "deinterlace_mode", &theApp.m_gs_deinterlace);
 
 	m_bifilter_select = m_ui.addComboBoxAndLabel(top_grid, "Texture Filtering:", "filter", &theApp.m_gs_bifilter, IDC_FILTER).first;
 

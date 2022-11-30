@@ -58,7 +58,7 @@ std::string BiosZone;
 std::string BiosPath;
 BiosDebugInformation CurrentBiosInformation;
 
-static bool LoadBiosVersion(std::FILE* fp, u32& version, std::string& description, u32& region, std::string& zone)
+static bool LoadBiosVersion(const char* filename, std::FILE* fp, u32& version, std::string& description, u32& region, std::string& zone)
 {
 	romdir rd;
 	for (u32 i = 0; i < 512 * 1024; i++)
@@ -109,13 +109,14 @@ static bool LoadBiosVersion(std::FILE* fp, u32& version, std::string& descriptio
 			char vermaj[3] = {romver[0], romver[1], 0};
 			char vermin[3] = {romver[2], romver[3], 0};
 
-			description = StringUtil::StdStringFromFormat("%-7s v%s.%s(%c%c/%c%c/%c%c%c%c)  %s",
+			description = StringUtil::StdStringFromFormat("%-7s v%s.%s(%c%c/%c%c/%c%c%c%c)  %s  %s",
 				zone.c_str(),
 				vermaj, vermin,
 				romver[12], romver[13], // day
 				romver[10], romver[11], // month
 				romver[6], romver[7], romver[8], romver[9], // year!
-				(romver[5] == 'C') ? "Console" : (romver[5] == 'D') ? "Devel" : "");
+				(romver[5] == 'C') ? "Console" : (romver[5] == 'D') ? "Devel" : "",
+				FileSystem::GetDisplayNameFromPath(filename).c_str());
 
 			version = strtol(vermaj, (char**)NULL, 0) << 8;
 			version |= strtol(vermin, (char**)NULL, 0);
@@ -161,7 +162,7 @@ void ChecksumIt(u32& result, const u8 (&srcdata)[_size])
 // the base.
 //
 // Parameters:
-//   ext - extension of the sub-component to load.  Valid options are rom1, rom2, AND erom.
+//   ext - extension of the sub-component to load. Valid options are rom1 and rom2.
 //
 template <size_t _size>
 static void LoadExtraRom(const char* ext, u8 (&dest)[_size])
@@ -176,8 +177,13 @@ static void LoadExtraRom(const char* ext, u8 (&dest)[_size])
 		Bios1 = Path::ReplaceExtension(BiosPath, ext);
 		if ((filesize = FileSystem::GetPathFileSize(Bios1.c_str())) <= 0)
 		{
-			Console.WriteLn(Color_Gray, "BIOS %s module not found, skipping...", ext);
-			return;
+			// Try the name properly extensioned next (name.ROM1)
+			Bios1 = Path::ReplaceExtension(BiosPath, StringUtil::toUpper(ext));
+			if ((filesize = FileSystem::GetPathFileSize(Bios1.c_str())) <= 0)
+			{
+				Console.WriteLn(Color_Gray, "BIOS %s module not found, skipping...", ext);
+				return;
+			}
 		}
 	}
 
@@ -187,7 +193,7 @@ static void LoadExtraRom(const char* ext, u8 (&dest)[_size])
 		Console.Warning("BIOS Warning: %s could not be read (permission denied?)", ext);
 		return;
 	}
-	// Checksum for ROM1, ROM2, EROM?  Rama says no, Gigaherz says yes.  I'm not sure either way.  --air
+	// Checksum for ROM1, ROM2?  Rama says no, Gigaherz says yes.  I'm not sure either way.  --air
 	//ChecksumIt( BiosChecksum, dest );
 }
 
@@ -236,7 +242,7 @@ static std::string FindBiosImage()
 // this method being called.
 //
 // Remarks:
-//   This function does not fail if rom1, rom2, or erom files are missing, since none are
+//   This function does not fail if rom1 or rom2 files are missing, since none are
 //   explicitly required for most emulation tasks.
 //
 // Exceptions:
@@ -268,7 +274,7 @@ bool LoadBIOS()
 	if (filesize <= 0)
 		return false;
 
-	LoadBiosVersion(fp.get(), BiosVersion, BiosDescription, BiosRegion, BiosZone);
+	LoadBiosVersion("", fp.get(), BiosVersion, BiosDescription, BiosRegion, BiosZone);
 
 	if (FileSystem::FSeek64(fp.get(), 0, SEEK_SET) ||
 		std::fread(eeMem->ROM, static_cast<size_t>(std::min<s64>(Ps2MemSize::Rom, filesize)), 1, fp.get()) != 1)
@@ -296,7 +302,6 @@ bool LoadBIOS()
 
 	LoadExtraRom("rom1", eeMem->ROM1);
 	LoadExtraRom("rom2", eeMem->ROM2);
-	LoadExtraRom("erom", eeMem->EROM);
 
 	if (EmuConfig.CurrentIRX.length() > 3)
 		LoadIrx(EmuConfig.CurrentIRX, &eeMem->ROM[0x3C0000], sizeof(eeMem->ROM) - 0x3C0000);
@@ -314,7 +319,7 @@ bool IsBIOS(const char* filename, u32& version, std::string& description, u32& r
 
 	// FPS2BIOS is smaller and of variable size
 	//if (inway.Length() < 512*1024) return false;
-	return LoadBiosVersion(fp.get(), version, description, region, zone);
+	return LoadBiosVersion(filename, fp.get(), version, description, region, zone);
 }
 
 bool IsBIOSAvailable(const std::string& full_path)

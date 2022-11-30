@@ -146,6 +146,12 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 			gameEntry.vuClampMode = static_cast<GameDatabaseSchema::ClampMode>(vuVal);
 		}
 	}
+	if (node.has_child("cdvdOffset"))
+	{
+		int val = 0;
+		node["cdvdOffset"] >> val;
+		gameEntry.cdvdOffset = val;
+	}
 
 	// Validate game fixes, invalid ones will be dropped!
 	if (node.has_child("gameFixes") && node["gameFixes"].has_children())
@@ -290,6 +296,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"texturePreloading",
 	"deinterlace",
 	"cpuSpriteRenderBW",
+	"cpuCLUTRender",
 	"gpuPaletteConversion",
 };
 static_assert(std::size(s_gs_hw_fix_names) == static_cast<u32>(GameDatabaseSchema::GSHWFixId::Count), "HW fix name lookup is correct size");
@@ -458,13 +465,13 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 			return (static_cast<int>(config.UserHacks_TextureInsideRt) == value);
 
 		case GSHWFixId::AlignSprite:
-			return (config.UpscaleMultiplier == 1 || static_cast<int>(config.UserHacks_AlignSpriteX) == value);
+			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_AlignSpriteX) == value);
 
 		case GSHWFixId::MergeSprite:
-			return (config.UpscaleMultiplier == 1 || static_cast<int>(config.UserHacks_MergePPSprite) == value);
+			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_MergePPSprite) == value);
 
 		case GSHWFixId::WildArmsHack:
-			return (config.UpscaleMultiplier == 1 || static_cast<int>(config.UserHacks_WildHack) == value);
+			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_WildHack) == value);
 
 		case GSHWFixId::PointListPalette:
 			return (static_cast<int>(config.PointListPalette) == value);
@@ -485,10 +492,10 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 			return (config.UserHacks_HalfBottomOverride == value);
 
 		case GSHWFixId::HalfPixelOffset:
-			return (config.UpscaleMultiplier == 1 || config.UserHacks_HalfPixelOffset == value);
+			return (config.UpscaleMultiplier <= 1.0f || config.UserHacks_HalfPixelOffset == value);
 
 		case GSHWFixId::RoundSprite:
-			return (config.UpscaleMultiplier == 1 || config.UserHacks_RoundSprite == value);
+			return (config.UpscaleMultiplier <= 1.0f || config.UserHacks_RoundSprite == value);
 
 		case GSHWFixId::TexturePreloading:
 			return (static_cast<int>(config.TexturePreloading) <= value);
@@ -498,6 +505,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 
 		case GSHWFixId::CPUSpriteRenderBW:
 			return (config.UserHacks_CPUSpriteRenderBW == value);
+
+		case GSHWFixId::CPUCLUTRender:
+			return (config.UserHacks_CPUCLUTRender == value);
 
 		case GSHWFixId::GPUPaletteConversion:
 			return (config.GPUPaletteConversion == ((value > 1) ? (config.TexturePreloading == TexturePreloadingLevel::Full) : (value != 0)));
@@ -628,7 +638,7 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 
 			case GSHWFixId::Deinterlace:
 			{
-				if (value >= 0 && value <= static_cast<int>(GSInterlaceMode::Automatic))
+				if (value >= static_cast<int>(GSInterlaceMode::Automatic) && value < static_cast<int>(GSInterlaceMode::Count))
 				{
 					if (config.InterlaceMode == GSInterlaceMode::Automatic)
 						config.InterlaceMode = static_cast<GSInterlaceMode>(value);
@@ -642,6 +652,9 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 				config.UserHacks_CPUSpriteRenderBW = value;
 				break;
 
+			case GSHWFixId::CPUCLUTRender:
+				config.UserHacks_CPUCLUTRender = value;
+				break;
 
 			case GSHWFixId::GPUPaletteConversion:
 			{
